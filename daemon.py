@@ -200,9 +200,9 @@ class Oracle(bot):
             
             # Get fact-checks from the last 24 hours to avoid reprocessing
             query = f"""
-            SELECT DISTINCT id
+            SELECT id
             FROM `{project_id}.{dataset_id}.{table_id}` 
-            WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 24 HOUR)
+            WHERE DATETIME(timestamp) >= DATETIME_SUB(CURRENT_DATETIME(), INTERVAL 24 HOUR)
             ORDER BY timestamp DESC
             LIMIT 100
             """
@@ -223,9 +223,20 @@ class Oracle(bot):
         try:
             # Check in-memory first (fast)
             if mention_uri in self.processed_mentions:
+                logger.info(f"Found in memory: {mention_uri}")
                 return True
             
-            # Check BigQuery for recent processing
+            # For the current session, check if this is in recent mentions we've already seen
+            # This is a simple but effective approach
+            mentions = self.get_recent_mentions()
+            if mention_uri in mentions:
+                # Check how many times we've seen this mention recently
+                recent_mentions = [m for m in mentions if m == mention_uri]
+                if len(recent_mentions) > 1:
+                    logger.info(f"Seen this mention multiple times recently: {mention_uri}")
+                    return True
+            
+            # Conservative approach: if we've processed many mentions very recently, skip
             if not self.bq_client:
                 return False
             
@@ -233,21 +244,20 @@ class Oracle(bot):
             table_id = os.getenv('BIGQUERY_TABLE_ID', 'fact-checker')
             project_id = os.getenv('BIGQUERY_PROJECT_ID')
             
-            # Look for recent fact-checks that might be for this mention
-            # This is a simplified check - could be enhanced
+            # Check for very recent activity (last 10 minutes)
             query = f"""
             SELECT COUNT(*) as count
             FROM `{project_id}.{dataset_id}.{table_id}` 
-            WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 HOUR)
+            WHERE DATETIME(timestamp) >= DATETIME_SUB(CURRENT_DATETIME(), INTERVAL 10 MINUTE)
             AND id IS NOT NULL
             """
             
             result = self.bq_client.query(query)
-            recent_count = result.iloc[0]['count'] if len(result) > 0 else 0
+            very_recent_count = result.iloc[0]['count'] if len(result) > 0 else 0
             
-            # If we've processed many recently, be more conservative
-            if recent_count > 10:
-                logger.warning(f"Many recent fact-checks ({recent_count}) - being conservative about duplicates")
+            # If we've processed mentions very recently, be conservative
+            if very_recent_count > 3:
+                logger.warning(f"Many very recent fact-checks ({very_recent_count}) - being conservative")
                 return True
             
             return False

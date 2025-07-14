@@ -4,8 +4,9 @@ import os
 import time
 import uuid
 import pandas as pd
+import requests
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from dotenv import load_dotenv
 from clients.gemini import Client as GeminiClient
 from clients.bluesky import Client as BlueskyClient
@@ -55,9 +56,54 @@ class bot:
             logger.warning(f"BigQuery not available: {e}")
             return None
         
-    def fact_check_post(self, post_url: str) -> Dict[str, Any]:
+    def fact_check_post(self, post_url: str, max_retries: int = 3) -> Dict[str, Any]:
         """
-        Fact-check a Bluesky post and return structured JSON response
+        Fact-check a Bluesky post with URL validation and retry logic
+        """
+        logger.info(f"Starting fact-check with URL validation (max {max_retries} attempts)")
+        
+        for attempt in range(max_retries):
+            logger.info(f"Fact-check attempt {attempt + 1}/{max_retries}")
+            
+            try:
+                result = self._fact_check_attempt(post_url)
+                
+                if "error" in result:
+                    logger.warning(f"Attempt {attempt + 1} failed with error: {result['error']}")
+                    continue
+                
+                # Validate source URLs
+                sources = result.get('sources', [])
+                invalid_urls = self._validate_source_urls(sources)
+                
+                if not invalid_urls:
+                    logger.info(f"Attempt {attempt + 1} successful - all {len(sources)} sources validated")
+                    return result
+                
+                logger.warning(f"Attempt {attempt + 1}: Found {len(invalid_urls)} invalid URLs out of {len(sources)} sources")
+                for url in invalid_urls:
+                    logger.warning(f"  Invalid URL: {url}")
+                
+                # If this is the last attempt, don't retry
+                if attempt == max_retries - 1:
+                    break
+                    
+                # Wait a bit before retry
+                time.sleep(2)
+                
+            except Exception as e:
+                logger.error(f"Attempt {attempt + 1} failed with exception: {e}")
+                if attempt == max_retries - 1:
+                    break
+                time.sleep(2)
+        
+        # All attempts failed - return inconclusive response
+        logger.warning("All fact-check attempts failed - returning inconclusive response")
+        return self._create_inconclusive_response()
+    
+    def _fact_check_attempt(self, post_url: str) -> Dict[str, Any]:
+        """
+        Single fact-check attempt without validation
         """
         start_time = time.time()
         
@@ -192,6 +238,85 @@ class bot:
                 cleaned = cleaned[len(prefix):].strip()
         
         return cleaned.strip()
+    
+    def _validate_source_urls(self, sources: List[Dict[str, Any]]) -> List[str]:
+        """
+        Validate all source URLs and return list of invalid ones
+        """
+        invalid_urls = []
+        
+        for source in sources:
+            url = source.get('url', '')
+            if not url:
+                continue
+                
+            if not self._is_valid_url(url):
+                invalid_urls.append(url)
+        
+        return invalid_urls
+    
+    def _is_valid_url(self, url: str) -> bool:
+        """
+        Check if a URL is valid and accessible
+        """
+        try:
+            # Basic URL format validation
+            if not url.startswith(('http://', 'https://')):
+                logger.warning(f"Invalid URL format: {url}")
+                return False
+            
+            # Make HEAD request to check if URL exists
+            logger.debug(f"Validating URL: {url}")
+            response = requests.head(
+                url, 
+                timeout=10,
+                allow_redirects=True,
+                headers={'User-Agent': 'Mozilla/5.0 (compatible; FactChecker/1.0)'}
+            )
+            
+            # Check for successful response codes
+            if response.status_code in [200, 301, 302, 303]:
+                logger.debug(f"URL valid: {url} (status: {response.status_code})")
+                return True
+            else:
+                logger.warning(f"URL returned error status {response.status_code}: {url}")
+                return False
+                
+        except requests.exceptions.Timeout:
+            logger.warning(f"URL timeout: {url}")
+            return False
+        except requests.exceptions.ConnectionError:
+            logger.warning(f"URL connection error: {url}")
+            return False
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"URL request failed: {url} - {e}")
+            return False
+        except Exception as e:
+            logger.warning(f"URL validation error: {url} - {e}")
+            return False
+    
+    def _create_inconclusive_response(self) -> Dict[str, Any]:
+        """
+        Create a fallback response when all attempts fail
+        """
+        return {
+            "thinking": "Multiple attempts to verify sources failed - unable to provide reliable fact-check",
+            "status": "UNVERIFIABLE",
+            "category": "OTHER",
+            "response": "Unable to achieve conclusive results. The claims could not be verified with reliable sources at this time.",
+            "sources": [],
+            "content_analysis": {
+                "emotional_tone": "NEUTRAL",
+                "contains_statistics": False,
+                "contains_quotes": False,
+                "contains_dates": False,
+                "uses_absolutes": False,
+                "creates_urgency": False,
+                "appeals_to_authority": False,
+                "personal_anecdote": False
+            },
+            "fact_check_id": str(uuid.uuid4())
+        }
     
     def _log_to_bigquery(self, post_url: str, thread_data: Dict[str, Any], result: Dict[str, Any], start_time: float) -> str:
         """Log fact-check result to BigQuery and return the fact-check ID"""
