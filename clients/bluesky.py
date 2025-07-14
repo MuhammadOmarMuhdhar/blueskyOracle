@@ -141,7 +141,9 @@ class Client:
         
         try:
             # Get parent post for reply refs
-            parent_response = self.client.app.bsky.feed.get_posts(uris=[parent_uri])
+            from atproto import models
+            params = models.AppBskyFeedGetPosts.Params(uris=[parent_uri])
+            parent_response = self.client.app.bsky.feed.get_posts(params=params)
             parent_post = parent_response.posts[0]
             parent_ref = models.create_strong_ref(parent_post)
             
