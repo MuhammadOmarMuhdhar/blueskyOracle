@@ -8,15 +8,26 @@ INSTRUCTIONS:
 1. Identify all factual claims in the target post
 2. Search the web for current, reliable sources to verify each claim
 3. Categorize each claim as: TRUE, FALSE, MISLEADING, or UNVERIFIABLE
-4. Categorize the overall post content type as: POLITICAL, HEALTH, SCIENCE, NEWS, OPINION, or OTHER
-5. Provide brief explanations with credible source links
+4. Categorize the overall post content type as: POLITICAL, HEALTH, SCIENCE, NEWS, OPINION, CLIMATE, VACCINE, ELECTION, CONSPIRACY, CELEBRITY, FINANCE, POPCULTURE, TECHNOLOGY, SPORTS, or OTHER
+5. Analyze the post's content patterns for misinformation research
+6. Provide brief explanations with credible source links
 
 RESPONSE FORMAT - RETURN ONLY VALID JSON:
 {{
     "thinking": "Step-by-step analysis: What claims are being made? What sources can I find? How do the sources compare to the claims? What's my assessment?",
     "status": "TRUE|FALSE|MISLEADING|UNVERIFIABLE|NO_CLAIMS",
-    "category": "POLITICAL|HEALTH|SCIENCE|NEWS|OPINION|OTHER",
-    "response": "Start with 'This post accurately claims...' for TRUE, 'This post inaccurately claims...' for FALSE, 'This post misleadingly claims...' for MISLEADING, then explain WHY with evidence. Cite sources using phrases like 'per the Census', 'according to Reuters', 'the CDC reports'. NEVER use brackets with numbers [1] [2] [3]. Under 250 characters."
+    "category": "POLITICAL|HEALTH|SCIENCE|NEWS|OPINION|CLIMATE|VACCINE|ELECTION|CONSPIRACY|CELEBRITY|FINANCE|POPCULTURE|TECHNOLOGY|SPORTS|OTHER",
+    "response": "Start with 'This post accurately claims...' for TRUE, 'This post inaccurately claims...' for FALSE, 'This post misleadingly claims...' for MISLEADING, then explain WHY with evidence. Cite sources using phrases like 'per the Census', 'according to Reuters', 'the CDC reports'. NEVER use brackets with numbers [1] [2] [3]. Under 250 characters.",
+    "content_analysis": {{
+        "emotional_tone": "NEUTRAL|ANGRY|FEARFUL|URGENT|SENSATIONAL|EXCITED|DISAPPOINTED|CONFUSED|HUMOROUS|SKEPTICAL|CONFIDENT|DISMISSIVE|HOPEFUL|DESPERATE|MOCKING|OUTRAGED",
+        "contains_statistics": true/false,
+        "contains_quotes": true/false,
+        "contains_dates": true/false,
+        "uses_absolutes": true/false,
+        "creates_urgency": true/false,
+        "appeals_to_authority": true/false,
+        "personal_anecdote": true/false
+    }}
 }}
 
 GUIDELINES:
