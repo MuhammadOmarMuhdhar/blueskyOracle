@@ -1,0 +1,14 @@
+# Virtual environment
+venv
+
+# debugging 
+workspace.ipynb
+
+# cache 
+__pycache__
+
+# vscode
+.vscode
+
+# secrets 
+.env
