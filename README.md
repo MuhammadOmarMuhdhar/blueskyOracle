@@ -1,15 +1,31 @@
 # BskyOracle
 
+
 A fact-checking bot for Bluesky that analyzes posts and provides accurate, concise fact-checks using AI-powered web search.
 
-## Features
+## Disclaimer
 
-- **Real-time fact-checking** of Bluesky posts using Google's Gemini AI with web search
-- **Thread context analysis** to understand conversation flow
-- **Structured responses** with status classification (TRUE/FALSE/MISLEADING/UNVERIFIABLE/NO_CLAIMS)
-- **Professional tone** suitable for social media engagement
-- **Source attribution** using natural language (e.g., "per the Census", "according to Reuters")
-- **Automatic cleanup** of academic citations and formatting
+This bot provides automated fact-checking assistance but should not be considered a definitive source of truth. Users should verify important information through multiple reliable sources.
+
+## File Structure
+
+```
+bskyOracle/
+├── clients/
+│   ├── bluesky.py      # Bluesky AT Protocol client for posts and notifications
+│   ├── gemini.py       # Google Gemini AI client with web search
+│   └── bigQuery.py     # BigQuery client for analytics logging
+├── bots/
+│   └── factChecker.py  # Main fact-checking bot logic
+├── prompt/
+│   └── prompt.txt      # Enhanced fact-checking prompt with content analysis
+├── daemon.py           # Live monitoring service (Oracle class)
+├── render.yaml         # Render deployment configuration
+├── Procfile           # Process definition for deployment
+├── requirements.txt   # Python dependencies
+├── DATA_POLICY.md     # Data collection and privacy policy
+└── .env              # Environment variables (API keys, BigQuery config)
+```
 
 ## Installation
 
@@ -27,7 +43,7 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 3. Install required dependencies:
 ```bash
-pip install google-generativeai atproto requests
+pip install -r requirements.txt
 ```
 
 ## Setup
@@ -36,24 +52,29 @@ pip install google-generativeai atproto requests
    - Google Gemini API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
    - Bluesky app password from [Bluesky Settings](https://bsky.app/settings/app-passwords)
 
-2. **Configure the bot:**
-   - Update the prompt in `prompt/prompt.txt` if needed
-   - Modify response format or guidelines as required
+2. **Create environment file:**
+   ```bash
+   cp .env.example .env
+   # Add your API keys to .env
+   ```
+
+3. **Configure BigQuery (optional):**
+   - Create a Google Cloud project
+   - Set up BigQuery dataset and service account
+   - Add BigQuery credentials to `.env`
+
+4. **Update prompt if needed:**
+   - Modify `prompt/prompt.txt` for custom fact-checking behavior
 
 ## Usage
 
 ### Basic Example
 
 ```python
-from fact_checker import FactChecker
+from bots.factChecker import bot
 
-# Initialize the fact checker
-fact_checker = FactChecker(
-    gemini_api_key="your-gemini-api-key",
-    bluesky_username="your.handle.bsky.social",
-    bluesky_password="your-app-password",
-    prompt_file="prompt/prompt.txt"
-)
+# Initialize the fact checker (reads from .env automatically)
+fact_checker = bot()
 
 # Fact-check a specific post
 post_url = "https://bsky.app/profile/user/post/123"
@@ -67,6 +88,16 @@ print(reply_text)
 success = fact_checker.post_fact_check_reply(post_url)
 ```
 
+### Live Monitoring
+
+```python
+from daemon import Oracle
+
+# Start live monitoring for mentions
+oracle = Oracle()
+oracle.monitor_mentions()  # Runs 24/7 monitoring
+```
+
 ### Response Format
 
 The bot returns structured JSON responses:
@@ -75,53 +106,29 @@ The bot returns structured JSON responses:
 {
     "thinking": "Step-by-step analysis of claims and sources",
     "status": "TRUE|FALSE|MISLEADING|UNVERIFIABLE|NO_CLAIMS",
-    "category": "POLITICAL|HEALTH|SCIENCE|NEWS|OPINION|OTHER",
-    "response": "Professional response suitable for Bluesky reply"
+    "category": "POLITICAL|HEALTH|SCIENCE|NEWS|OPINION|CLIMATE|VACCINE|ELECTION|CONSPIRACY|CELEBRITY|FINANCE|POPCULTURE|TECHNOLOGY|SPORTS|OTHER",
+    "response": "Professional response suitable for Bluesky reply",
+    "content_analysis": {
+        "emotional_tone": "NEUTRAL|ANGRY|FEARFUL|URGENT|SENSATIONAL|...",
+        "contains_statistics": true,
+        "contains_quotes": false,
+        "uses_absolutes": true,
+        "creates_urgency": false
+    }
 }
 ```
-
-## File Structure
-
-```
-bskyOracle/
-├── clients/
-│   ├── bluesky.py      # Bluesky client for reading posts and replying
-│   └── gemini.py       # Google Gemini client with web search
-├── prompt/
-│   └── prompt.txt      # Fact-checking prompt template
-├── fact_checker.py     # Main FactChecker class
-└── README.md
-```
-
-## Key Components
-
-### BlueskyClient (`clients/bluesky.py`)
-- Authenticates with Bluesky
-- Retrieves post content and thread context
-- Posts replies to fact-checked content
-- Converts URLs to AT Protocol URIs
-
-### GeminiClient (`clients/gemini.py`)
-- Interfaces with Google's Gemini AI
-- Enables web search for fact-checking
-- Handles rate limiting and caching
-
-### FactChecker (`fact_checker.py`)
-- Orchestrates the fact-checking workflow
-- Parses JSON responses robustly
-- Cleans up citations and formatting
-- Provides both raw data and formatted responses
 
 ## Prompt Engineering
 
 The bot uses a carefully crafted prompt (`prompt/prompt.txt`) that:
 
 - Instructs the model to think step-by-step
-- Defines clear classification criteria
-- Emphasizes natural source attribution
+- Defines clear classification criteria (TRUE/FALSE/MISLEADING/UNVERIFIABLE)
+- Emphasizes natural source attribution (no numbered citations)
+- Analyzes content patterns for misinformation research
 - Focuses on substantial errors vs. minor variations
 - Maintains professional but conversational tone
-- Limits response length for social media
+- Limits response length for social media (under 250 characters)
 
 ## Response Guidelines
 
@@ -131,29 +138,55 @@ The bot uses a carefully crafted prompt (`prompt/prompt.txt`) that:
 - **UNVERIFIABLE**: Claims cannot be confirmed with available sources
 - **NO_CLAIMS**: Post contains no specific factual claims to verify
 
-## Rate Limiting
+## Features
 
-The Gemini client includes built-in rate limiting (6-second delay by default) to respect API limits. Responses are cached to avoid redundant API calls.
+### Core Functionality
+- **AI-Powered Fact-Checking**: Uses Google Gemini with web search for real-time verification
+- **Smart Thread Analysis**: Fact-checks the post being replied to, not the mention request
+- **Content Pattern Analysis**: Analyzes emotional tone, linguistic patterns, and misinformation markers
+- **Privacy-First**: No personal data or post content stored, only anonymized analytics
 
-## Error Handling
+### Analytics & Research
+- **BigQuery Integration**: Logs anonymized fact-checking analytics for misinformation research
+- **Content Classification**: Categorizes posts by topic and emotional characteristics
+- **Performance Metrics**: Tracks response times, accuracy patterns, and usage statistics
+- **Research Ready**: Structured data suitable for academic misinformation studies
 
-- Robust JSON parsing with fallback extraction
-- Automatic cleanup of academic citations and quotation marks
-- Graceful handling of authentication and API failures
-- Clear error messages for debugging
+### Deployment Ready
+- **Live Monitoring**: 24/7 mention detection and automatic responses
+- **Render Compatible**: Ready for cloud deployment with provided configuration
+- **Robust Error Handling**: Graceful fallbacks and comprehensive logging
+- **Environment Driven**: All configuration through environment variables
+
+## How It Works
+
+1. **Mention Detection**: Bot monitors Bluesky for mentions using AT Protocol notifications
+2. **Thread Analysis**: When mentioned, retrieves the post being replied to (not the mention itself)
+3. **AI Fact-Check**: Sends content to Google Gemini with web search for real-time verification
+4. **Response Generation**: Creates concise, professional fact-check response (under 250 chars)
+5. **Analytics Logging**: Records anonymized patterns and metrics to BigQuery
+6. **Reply Posting**: Automatically posts fact-check response as a reply
+
+## Deployment
+
+### Render (Recommended)
+
+1. Connect your GitHub repository to Render
+2. Use the provided `render.yaml` configuration
+3. Set environment variables in Render dashboard
+4. Deploy as a background worker service
+
 
 ## Contributing
+
+Please feel free to contribute to this project. 
 
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
+4. Submit a pull request
 
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## Disclaimer
-
-This bot provides automated fact-checking assistance but should not be considered a definitive source of truth. Users should verify important information through multiple reliable sources.
