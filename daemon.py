@@ -43,16 +43,18 @@ class Oracle(bot):
         try:
             logger.info(f"Processing mention: {mention_uri}")
             
-            # Get the mention content to check if it's a sources request
-            thread_data = self.bluesky_client.get_thread_chain(mention_uri)
-            if not thread_data:
-                logger.warning(f"Could not retrieve thread data for {mention_uri}")
+            # Get the actual mention text to check if it's a sources request
+            mention_text = self.bluesky_client.get_post_text(mention_uri)
+            if not mention_text:
+                logger.warning(f"Could not retrieve mention text for {mention_uri}")
                 return
             
-            mention_text = thread_data.get("replying_to", {}).get("text", "").lower().strip()
+            mention_text = mention_text.lower().strip()
             
             # Check if this is a sources request
-            if mention_text == "sources" or "sources" in mention_text:
+            if "sources" in mention_text and len(mention_text.replace("@blueskyoracle.bsky.social", "").strip()) <= 10:
+                # Get thread data for sources request
+                thread_data = self.bluesky_client.get_thread_chain(mention_uri)
                 self.handle_sources_request(mention_uri, thread_data)
             else:
                 # Regular fact-check request

@@ -150,7 +150,7 @@ class bot:
                 'category': result.get('category', ''),
                 'response': result.get('response', ''),
                 'response_length': len(result.get('response', '')),
-                'sources': json.dumps(result.get('sources', [])),  # Store sources as JSON string
+                # 'sources': json.dumps(result.get('sources', [])),  # Temporarily disabled until schema updated
                 'processing_time_ms': int((time.time() - start_time) * 1000),
                 'model_version': 'gemini-2.0-flash-v1',
                 'day_of_week': now.strftime('%A').upper(),
