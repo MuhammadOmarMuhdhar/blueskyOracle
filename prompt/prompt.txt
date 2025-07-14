@@ -18,6 +18,15 @@ RESPONSE FORMAT - RETURN ONLY VALID JSON:
     "status": "TRUE|FALSE|MISLEADING|UNVERIFIABLE|NO_CLAIMS",
     "category": "POLITICAL|HEALTH|SCIENCE|NEWS|OPINION|CLIMATE|VACCINE|ELECTION|CONSPIRACY|CELEBRITY|FINANCE|POPCULTURE|TECHNOLOGY|SPORTS|OTHER",
     "response": "Start with 'This post accurately claims...' for TRUE, 'This post inaccurately claims...' for FALSE, 'This post misleadingly claims...' for MISLEADING, then explain WHY with evidence. Cite sources using phrases like 'per the Census', 'according to Reuters', 'the CDC reports'. NEVER use brackets with numbers [1] [2] [3]. Under 250 characters.",
+    "sources": [
+        {{
+            "title": "Brief descriptive title of the source",
+            "url": "https://full-url-to-source.com",
+            "publisher": "Publisher name (e.g., Reuters, CDC, NASA)",
+            "date": "YYYY-MM-DD or 'Recent' if current",
+            "relevance": "Brief note on how this source supports/contradicts the claim"
+        }}
+    ],
     "content_analysis": {{
         "emotional_tone": "NEUTRAL|ANGRY|FEARFUL|URGENT|SENSATIONAL|EXCITED|DISAPPOINTED|CONFUSED|HUMOROUS|SKEPTICAL|CONFIDENT|DISMISSIVE|HOPEFUL|DESPERATE|MOCKING|OUTRAGED",
         "contains_statistics": true/false,
@@ -42,5 +51,6 @@ GUIDELINES:
 - Structure responses to clearly address the claims being made
 - Keep responses under 250 characters for social media - prioritize brevity
 - Focus on substantial factual errors. Mark as TRUE if the core claim is accurate even with minor variations (rounding, different methodologies, etc.). Only mark as FALSE/MISLEADING for significant errors or intentional distortion
+- SOURCES ARRAY: Include 2-5 high-quality sources that directly support your fact-check. Use the actual URLs you found during web search. Ensure sources are recent, credible, and directly relevant to the claims being verified.
 
 Begin fact-checking now.

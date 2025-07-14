@@ -567,3 +567,27 @@ class Client:
         except Exception as e:
             self.logger.warning(f"Failed to convert value {type(value)} to string: {e}")
             return None
+    
+    def query(self, sql: str) -> pd.DataFrame:
+        """
+        Execute a BigQuery SQL query and return results as DataFrame
+        
+        Args:
+            sql: SQL query string
+            
+        Returns:
+            DataFrame with query results, empty DataFrame on error
+        """
+        try:
+            self.logger.info(f"Executing BigQuery query")
+            
+            # Execute query and convert to DataFrame
+            query_job = self.client.query(sql)
+            result_df = query_job.to_dataframe()
+            
+            self.logger.info(f"Query returned {len(result_df)} rows")
+            return result_df
+            
+        except Exception as e:
+            self.logger.error(f"Query execution failed: {e}")
+            return pd.DataFrame()  # Return empty DataFrame on error

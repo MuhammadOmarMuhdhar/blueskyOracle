@@ -43,19 +43,52 @@ class Oracle(bot):
         try:
             logger.info(f"Processing mention: {mention_uri}")
             
-            # Fact-check and reply
-            result = self.post_fact_check_reply(mention_uri)
+            # Get the mention content to check if it's a sources request
+            thread_data = self.bluesky_client.get_thread_chain(mention_uri)
+            if not thread_data:
+                logger.warning(f"Could not retrieve thread data for {mention_uri}")
+                return
             
-            if result:
-                logger.info(f"Successfully replied to {mention_uri}")
+            mention_text = thread_data.get("replying_to", {}).get("text", "").lower().strip()
+            
+            # Check if this is a sources request
+            if mention_text == "sources" or "sources" in mention_text:
+                self.handle_sources_request(mention_uri, thread_data)
             else:
-                logger.warning(f"Failed to reply to {mention_uri}")
+                # Regular fact-check request
+                result = self.post_fact_check_reply(mention_uri)
+                
+                if result:
+                    logger.info(f"Successfully replied to {mention_uri}")
+                else:
+                    logger.warning(f"Failed to reply to {mention_uri}")
                 
             # Track processed mentions
             self.processed_mentions.add(mention_uri)
             
         except Exception as e:
             logger.error(f"Error handling mention {mention_uri}: {e}")
+    
+    def handle_sources_request(self, mention_uri, thread_data):
+        """Handle a request for sources from a previous fact-check"""
+        try:
+            logger.info(f"Processing sources request: {mention_uri}")
+            
+            # Check if this mention is replying to a bot post
+            # We need to find the original fact-check post to get its ID
+            # For now, let's extract from thread context or post a general message
+            
+            sources_response = "To get sources for a fact-check, reply 'sources' directly to my fact-check response. This feature is still being implemented."
+            
+            success = self.bluesky_client.post_reply(mention_uri, sources_response)
+            
+            if success:
+                logger.info(f"Successfully posted sources response to {mention_uri}")
+            else:
+                logger.warning(f"Failed to post sources response to {mention_uri}")
+                
+        except Exception as e:
+            logger.error(f"Error handling sources request {mention_uri}: {e}")
     
     def monitor_loop(self, check_interval=30):
         """Main monitoring loop"""

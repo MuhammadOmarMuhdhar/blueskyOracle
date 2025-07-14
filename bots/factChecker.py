@@ -82,8 +82,11 @@ class bot:
         try:
             parsed_result = self._parse_json_response(response, "gemini", {})
             
-            # Log to BigQuery
-            self._log_to_bigquery(post_url, thread_data, parsed_result, start_time)
+            # Log to BigQuery and get fact-check ID
+            fact_check_id = self._log_to_bigquery(post_url, thread_data, parsed_result, start_time)
+            
+            # Add fact-check ID to result for source retrieval
+            parsed_result['fact_check_id'] = fact_check_id
             
             return parsed_result
         except Exception as e:
@@ -123,10 +126,12 @@ class bot:
         
         return parsed_json
     
-    def _log_to_bigquery(self, post_url: str, thread_data: Dict[str, Any], result: Dict[str, Any], start_time: float):
-        """Log fact-check result to BigQuery"""
+    def _log_to_bigquery(self, post_url: str, thread_data: Dict[str, Any], result: Dict[str, Any], start_time: float) -> str:
+        """Log fact-check result to BigQuery and return the fact-check ID"""
+        fact_check_id = str(uuid.uuid4())
+        
         if not self.bq_client:
-            return
+            return fact_check_id
         
         try:
             post_text = thread_data["replying_to"]["text"]
@@ -135,14 +140,17 @@ class bot:
             # Get content analysis from LLM response or fallback to manual analysis
             content_analysis = result.get('content_analysis', {})
             
+            # Use the fact-check ID generated at method start
+            
             record = {
-                'id': str(uuid.uuid4()),
+                'id': fact_check_id,
                 'timestamp': now,
                 'thinking': result.get('thinking', ''),
                 'status': result.get('status', ''),
                 'category': result.get('category', ''),
                 'response': result.get('response', ''),
                 'response_length': len(result.get('response', '')),
+                'sources': json.dumps(result.get('sources', [])),  # Store sources as JSON string
                 'processing_time_ms': int((time.time() - start_time) * 1000),
                 'model_version': 'gemini-2.0-flash-v1',
                 'day_of_week': now.strftime('%A').upper(),
@@ -176,10 +184,12 @@ class bot:
             table_id = os.getenv('BIGQUERY_TABLE_ID', 'responses')
             
             self.bq_client.append(df, dataset_id, table_id, create_if_not_exists=True)
-            logger.info(f"Successfully logged fact-check to BigQuery")
+            logger.info(f"Successfully logged fact-check to BigQuery with ID: {fact_check_id}")
             
         except Exception as e:
             logger.error(f"Failed to log to BigQuery: {e}")
+        
+        return fact_check_id
     
     def _detect_emotional_tone(self, text: str) -> str:
         """Simple emotional tone detection"""
@@ -301,3 +311,92 @@ class bot:
             logger.error(f"Failed to post reply to {original_post_url}")
             
         return success
+    
+    def get_sources_by_id(self, fact_check_id: str) -> list:
+        """
+        Retrieve sources for a specific fact-check ID from BigQuery
+        
+        Args:
+            fact_check_id: The UUID of the fact-check record
+            
+        Returns:
+            List of source dictionaries, empty list if not found or error
+        """
+        if not self.bq_client:
+            logger.warning("BigQuery not available for source retrieval")
+            return []
+        
+        try:
+            dataset_id = os.getenv('BIGQUERY_DATASET_ID', 'dataset')
+            table_id = os.getenv('BIGQUERY_TABLE_ID', 'fact-checker')
+            project_id = os.getenv('BIGQUERY_PROJECT_ID')
+            
+            query = f"""
+            SELECT sources 
+            FROM `{project_id}.{dataset_id}.{table_id}` 
+            WHERE id = '{fact_check_id}'
+            LIMIT 1
+            """
+            
+            result = self.bq_client.query(query)
+            
+            if len(result) > 0 and 'sources' in result.columns:
+                sources_json = result.iloc[0]['sources']
+                if sources_json:
+                    return json.loads(sources_json)
+            
+            return []
+            
+        except Exception as e:
+            logger.error(f"Failed to retrieve sources from BigQuery: {e}")
+            return []
+    
+    def format_sources_response(self, sources: list) -> str:
+        """
+        Format sources list into a readable Bluesky reply
+        
+        Args:
+            sources: List of source dictionaries from BigQuery
+            
+        Returns:
+            Formatted string with sources, or error message
+        """
+        if not sources:
+            return "No sources found for this fact-check."
+        
+        response_parts = ["Sources for this fact-check:"]
+        
+        for i, source in enumerate(sources[:5], 1):  # Limit to 5 sources
+            title = source.get('title', 'Source')
+            url = source.get('url', '')
+            publisher = source.get('publisher', '')
+            
+            if publisher:
+                source_line = f"{i}. {title} - {publisher}"
+            else:
+                source_line = f"{i}. {title}"
+            
+            if url:
+                source_line += f"\n{url}"
+            
+            response_parts.append(source_line)
+        
+        full_response = "\n\n".join(response_parts)
+        
+        # Truncate if too long for Bluesky (300 char limit)
+        if len(full_response) > 280:
+            # Try shorter format
+            response_parts = ["Sources:"]
+            for i, source in enumerate(sources[:3], 1):
+                url = source.get('url', '')
+                title = source.get('title', f'Source {i}')
+                if url:
+                    response_parts.append(f"{i}. {title[:50]}...\n{url}")
+            
+            full_response = "\n\n".join(response_parts)
+            
+            # Final truncation if still too long
+            if len(full_response) > 280:
+                full_response = full_response[:277] + "..."
+        
+        return full_response
