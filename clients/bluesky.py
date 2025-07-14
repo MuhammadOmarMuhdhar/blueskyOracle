@@ -91,12 +91,12 @@ class Client:
                     else:
                         posts.append(f"@{author}: {text}")
             
-            # Get parent posts first (context)
-            if hasattr(thread.thread, 'parent'):
-                collect_posts(thread.thread.parent, is_target=False)
+            # Get the current post (user's request - this becomes context)
+            collect_posts(thread.thread, is_target=False)
             
-            # Get the target post (the one we're replying to)
-            collect_posts(thread.thread, is_target=True)
+            # Get parent post (the one to fact-check)
+            if hasattr(thread.thread, 'parent'):
+                collect_posts(thread.thread.parent, is_target=True)
             
             if not target_post:
                 return None
@@ -112,6 +112,20 @@ class Client:
         except Exception as e:
             print(f"Exception in get_thread_chain: {e}")
             return None
+    
+    def get_notifications(self, limit: int = 50) -> list:
+        """Get recent notifications (mentions, replies, etc.)"""
+        if not self.authenticated:
+            return []
+        
+        try:
+            from atproto import models
+            params = models.AppBskyNotificationListNotifications.Params(limit=limit)
+            response = self.client.app.bsky.notification.list_notifications(params=params)
+            return response.notifications
+        except Exception as e:
+            print(f"Exception in get_notifications: {e}")
+            return []
     
     def post_reply(self, parent_url_or_uri: str, text: str) -> bool:
         """Post a reply to a post"""
