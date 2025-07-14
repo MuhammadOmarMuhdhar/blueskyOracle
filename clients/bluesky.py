@@ -127,6 +127,63 @@ class Client:
             print(f"Exception in get_notifications: {e}")
             return []
     
+    def get_post_replies(self, post_url_or_uri: str, limit: int = 100) -> list:
+        """Get replies to a specific post"""
+        if not self.authenticated:
+            return []
+        
+        if post_url_or_uri.startswith("https://"):
+            post_uri = self.url_to_uri(post_url_or_uri)
+            if not post_uri:
+                return []
+        else:
+            post_uri = post_url_or_uri
+        
+        try:
+            from atproto import models
+            params = models.AppBskyFeedGetPostThread.Params(
+                uri=post_uri,
+                depth=1,  # Only get direct replies
+                parentHeight=0  # Don't get parent context
+            )
+            response = self.client.app.bsky.feed.get_post_thread(params=params)
+            
+            replies = []
+            if hasattr(response.thread, 'replies') and response.thread.replies:
+                for reply in response.thread.replies:
+                    if hasattr(reply, 'post') and hasattr(reply.post, 'author'):
+                        replies.append({
+                            'uri': reply.post.uri,
+                            'author_handle': reply.post.author.handle,
+                            'author_did': reply.post.author.did,
+                            'text': getattr(reply.post.record, 'text', ''),
+                            'created_at': getattr(reply.post.record, 'createdAt', '')
+                        })
+            
+            return replies
+            
+        except Exception as e:
+            print(f"Exception in get_post_replies: {e}")
+            return []
+    
+    def has_bot_already_replied(self, post_url_or_uri: str, bot_handle: str) -> bool:
+        """Check if the bot has already replied to this post"""
+        try:
+            replies = self.get_post_replies(post_url_or_uri)
+            print(f"Found {len(replies)} replies")
+            
+            # Check if any reply is from the bot
+            for reply in replies:
+                if reply['author_handle'] == bot_handle:
+                    print(f"Found existing bot reply: {reply['uri']}")
+                    return True
+            return False
+            
+        except Exception as e:
+            print(f"Exception in has_bot_already_replied: {e}")
+            # Return False on error to avoid blocking legitimate posts
+            return False
+
     def post_reply(self, parent_url_or_uri: str, text: str) -> bool:
         """Post a reply to a post"""
         if not self.authenticated:

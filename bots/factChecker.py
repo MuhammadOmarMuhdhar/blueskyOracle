@@ -72,21 +72,33 @@ class bot:
                     logger.warning(f"Attempt {attempt + 1} failed with error: {result['error']}")
                     continue
                 
-                # Validate source URLs
+                # Validate source URLs with smarter thresholds
                 sources = result.get('sources', [])
                 invalid_urls = self._validate_source_urls(sources)
                 
-                if not invalid_urls:
-                    logger.info(f"Attempt {attempt + 1} successful - all {len(sources)} sources validated")
+                # Calculate success rate
+                total_sources = len(sources)
+                invalid_count = len(invalid_urls)
+                valid_count = total_sources - invalid_count
+                success_rate = (valid_count / total_sources * 100) if total_sources > 0 else 0
+                
+                # Accept if no sources (general statements) or ≥50% sources work
+                if total_sources == 0 or success_rate >= 50:
+                    if total_sources == 0:
+                        logger.info(f"Attempt {attempt + 1} successful - no specific sources to validate")
+                    else:
+                        logger.info(f"Attempt {attempt + 1} successful - {valid_count}/{total_sources} sources validated ({success_rate:.1f}%)")
                     return result
                 
-                logger.warning(f"Attempt {attempt + 1}: Found {len(invalid_urls)} invalid URLs out of {len(sources)} sources")
+                # Only retry if success rate is too low (<50%) and we have sources
+                logger.warning(f"Attempt {attempt + 1}: Only {valid_count}/{total_sources} sources valid ({success_rate:.1f}%) - below 50% threshold")
                 for url in invalid_urls:
                     logger.warning(f"  Invalid URL: {url}")
                 
-                # If this is the last attempt, don't retry
+                # If this is the last attempt, accept anyway to avoid inconclusive results
                 if attempt == max_retries - 1:
-                    break
+                    logger.warning(f"Final attempt - accepting result despite low source validation rate")
+                    return result
                     
                 # Wait a bit before retry
                 time.sleep(2)

@@ -2,6 +2,7 @@ import time
 import logging
 import os
 from datetime import datetime
+import pandas as pd
 from bots.factChecker  import bot 
 
 # Set up logging
@@ -16,23 +17,42 @@ class Oracle(bot):
         super().__init__()
         self.processed_mentions = set()
         self.bot_handle = self.bluesky_username
-        # Load recently processed mentions from BigQuery on startup
-        self.load_recent_processed_mentions()
+        self.last_processed_timestamp = None
+        # Initialize timestamp-based duplicate prevention
+        self.init_timestamp_tracking()
         
     def get_recent_mentions(self):
-        """Get recent mentions from notifications"""
+        """Get recent mentions from notifications, filtered by timestamp"""
         try:
             logger.info("Checking for new mentions...")
             
             # Get notifications from Bluesky
             notifications = self.bluesky_client.get_notifications()
             
-            # Filter for mentions only
+            # Filter for mentions only and by timestamp
             mentions = []
+            new_latest_timestamp = self.last_processed_timestamp
+            
             for notif in notifications:
                 if (hasattr(notif, 'reason') and notif.reason == 'mention' and
-                    hasattr(notif, 'uri') and notif.uri):
-                    mentions.append(notif.uri)
+                    hasattr(notif, 'uri') and notif.uri and hasattr(notif, 'indexedAt')):
+                    
+                    # Parse notification timestamp
+                    notif_timestamp = pd.to_datetime(notif.indexedAt, utc=True)
+                    
+                    # Only process mentions newer than last processed timestamp
+                    if notif_timestamp > self.last_processed_timestamp:
+                        mentions.append(notif.uri)
+                        
+                        # Track the newest timestamp we've seen
+                        if notif_timestamp > new_latest_timestamp:
+                            new_latest_timestamp = notif_timestamp
+            
+            # Update our tracking timestamp if we found newer mentions
+            if new_latest_timestamp > self.last_processed_timestamp:
+                logger.info(f"Found {len(mentions)} new mentions since {self.last_processed_timestamp}")
+                self.last_processed_timestamp = new_latest_timestamp
+                self.update_timestamp_in_bigquery()
             
             return mentions
             
@@ -45,9 +65,10 @@ class Oracle(bot):
         try:
             logger.info(f"Processing mention: {mention_uri}")
             
-            # Check if already processed
-            if self.is_mention_already_processed(mention_uri):
-                logger.info(f"Skipping already processed mention: {mention_uri}")
+            # With timestamp-based filtering, mentions should already be new
+            # But keep a simple in-memory check for the current session
+            if mention_uri in self.processed_mentions:
+                logger.info(f"Skipping already processed mention in current session: {mention_uri}")
                 return
             
             # Get the actual mention text to check if it's a sources request
@@ -64,7 +85,12 @@ class Oracle(bot):
                 thread_data = self.bluesky_client.get_thread_chain(mention_uri)
                 self.handle_sources_request(mention_uri, thread_data)
             else:
-                # Regular fact-check request
+                # Regular fact-check request - check if we already replied to this mention
+                if self.bluesky_client.has_bot_already_replied(mention_uri, self.bluesky_username):
+                    logger.info(f"Bot already replied to mention {mention_uri}, skipping")
+                    return
+                
+                # Proceed with fact-check
                 result = self.post_fact_check_reply(mention_uri)
                 
                 if result:
@@ -72,7 +98,7 @@ class Oracle(bot):
                 else:
                     logger.warning(f"Failed to reply to {mention_uri}")
                 
-            # Track processed mentions
+            # Track processed mentions in current session
             self.processed_mentions.add(mention_uri)
             
         except Exception as e:
@@ -187,84 +213,52 @@ class Oracle(bot):
         except Exception:
             return False
     
-    def load_recent_processed_mentions(self):
-        """Load recently processed mentions from BigQuery to avoid duplicates"""
+    def init_timestamp_tracking(self):
+        """Initialize timestamp-based duplicate prevention"""
         try:
             if not self.bq_client:
                 logger.warning("BigQuery not available - using memory-only tracking")
+                self.last_processed_timestamp = pd.Timestamp('1970-01-01', tz='UTC')
                 return
             
             dataset_id = os.getenv('BIGQUERY_DATASET_ID', 'dataset')
-            table_id = os.getenv('BIGQUERY_TABLE_ID', 'fact-checker')
-            project_id = os.getenv('BIGQUERY_PROJECT_ID')
+            timestamp_table_id = 'oracle_timestamps'
             
-            # Get fact-checks from the last 24 hours to avoid reprocessing
-            query = f"""
-            SELECT id
-            FROM `{project_id}.{dataset_id}.{table_id}` 
-            WHERE DATETIME(timestamp) >= DATETIME_SUB(CURRENT_DATETIME(), INTERVAL 24 HOUR)
-            ORDER BY timestamp DESC
-            LIMIT 100
-            """
+            # Create timestamp table if it doesn't exist
+            self.bq_client.create_timestamp_table(dataset_id, timestamp_table_id)
             
-            result = self.bq_client.query(query)
+            # Load last processed timestamp
+            self.last_processed_timestamp = self.bq_client.get_last_processed_timestamp(
+                dataset_id, timestamp_table_id
+            )
             
-            # Add to processed set (using fact-check IDs as proxy for processed mentions)
-            for _, row in result.iterrows():
-                self.processed_mentions.add(row['id'])
-            
-            logger.info(f"Loaded {len(result)} recent processed mentions from BigQuery")
+            logger.info(f"Initialized timestamp tracking. Last processed: {self.last_processed_timestamp}")
             
         except Exception as e:
-            logger.error(f"Error loading processed mentions: {e}")
+            logger.error(f"Error initializing timestamp tracking: {e}")
+            self.last_processed_timestamp = pd.Timestamp('1970-01-01', tz='UTC')
     
-    def is_mention_already_processed(self, mention_uri):
-        """Check if this mention has already been processed"""
+    def update_timestamp_in_bigquery(self):
+        """Update the last processed timestamp in BigQuery"""
         try:
-            # Check in-memory first (fast)
-            if mention_uri in self.processed_mentions:
-                logger.info(f"Found in memory: {mention_uri}")
-                return True
-            
-            # For the current session, check if this is in recent mentions we've already seen
-            # This is a simple but effective approach
-            mentions = self.get_recent_mentions()
-            if mention_uri in mentions:
-                # Check how many times we've seen this mention recently
-                recent_mentions = [m for m in mentions if m == mention_uri]
-                if len(recent_mentions) > 1:
-                    logger.info(f"Seen this mention multiple times recently: {mention_uri}")
-                    return True
-            
-            # Conservative approach: if we've processed many mentions very recently, skip
             if not self.bq_client:
-                return False
+                return
             
             dataset_id = os.getenv('BIGQUERY_DATASET_ID', 'dataset')
-            table_id = os.getenv('BIGQUERY_TABLE_ID', 'fact-checker')
-            project_id = os.getenv('BIGQUERY_PROJECT_ID')
+            timestamp_table_id = 'oracle_timestamps'
             
-            # Check for very recent activity (last 10 minutes)
-            query = f"""
-            SELECT COUNT(*) as count
-            FROM `{project_id}.{dataset_id}.{table_id}` 
-            WHERE DATETIME(timestamp) >= DATETIME_SUB(CURRENT_DATETIME(), INTERVAL 10 MINUTE)
-            AND id IS NOT NULL
-            """
+            success = self.bq_client.update_last_processed_timestamp(
+                dataset_id, timestamp_table_id, self.last_processed_timestamp
+            )
             
-            result = self.bq_client.query(query)
-            very_recent_count = result.iloc[0]['count'] if len(result) > 0 else 0
-            
-            # If we've processed mentions very recently, be conservative
-            if very_recent_count > 3:
-                logger.warning(f"Many very recent fact-checks ({very_recent_count}) - being conservative")
-                return True
-            
-            return False
-            
+            if success:
+                logger.info(f"Updated timestamp in BigQuery: {self.last_processed_timestamp}")
+            else:
+                logger.warning(f"Failed to update timestamp in BigQuery")
+                
         except Exception as e:
-            logger.error(f"Error checking if mention processed: {e}")
-            return False
+            logger.error(f"Error updating timestamp in BigQuery: {e}")
+    
     
     def monitor_loop(self, check_interval=30):
         """Main monitoring loop"""
@@ -275,7 +269,7 @@ class Oracle(bot):
                 # Get new mentions
                 mentions = self.get_recent_mentions()
                 
-                # Process unprocessed mentions
+                # Process new mentions (already filtered by timestamp)
                 new_mentions = [m for m in mentions if m not in self.processed_mentions]
                 
                 if new_mentions:

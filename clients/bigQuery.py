@@ -591,3 +591,136 @@ class Client:
         except Exception as e:
             self.logger.error(f"Query execution failed: {e}")
             return pd.DataFrame()  # Return empty DataFrame on error
+    
+    def create_timestamp_table(self, dataset_id: str, table_id: str) -> bool:
+        """
+        Create a table to store the last processed timestamp
+        
+        Args:
+            dataset_id: BigQuery dataset ID
+            table_id: BigQuery table ID
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            self.logger.info(f"Creating timestamp table: {dataset_id}.{table_id}")
+            
+            schema = [
+                bigquery.SchemaField("key", "STRING", mode="REQUIRED"),
+                bigquery.SchemaField("timestamp", "TIMESTAMP", mode="REQUIRED"),
+                bigquery.SchemaField("updated_at", "TIMESTAMP", mode="REQUIRED")
+            ]
+            
+            table_ref = self.client.dataset(dataset_id).table(table_id)
+            table = bigquery.Table(table_ref, schema=schema)
+            
+            # Create table
+            self.client.create_table(table)
+            self.logger.info(f"Timestamp table created successfully")
+            
+            # Insert initial row
+            initial_data = pd.DataFrame({
+                'key': ['last_processed_mention'],
+                'timestamp': [pd.Timestamp('1970-01-01', tz='UTC')],
+                'updated_at': [pd.Timestamp.now(tz='UTC')]
+            })
+            
+            self.append(initial_data, dataset_id, table_id, create_if_not_exists=False)
+            self.logger.info(f"Initial timestamp row inserted")
+            
+            return True
+            
+        except Exception as e:
+            if "already exists" in str(e).lower():
+                self.logger.info(f"Timestamp table already exists")
+                return True
+            self.logger.error(f"Error creating timestamp table: {e}")
+            return False
+    
+    def get_last_processed_timestamp(self, dataset_id: str, table_id: str) -> pd.Timestamp:
+        """
+        Get the last processed timestamp
+        
+        Args:
+            dataset_id: BigQuery dataset ID
+            table_id: BigQuery table ID
+            
+        Returns:
+            Last processed timestamp or epoch if not found
+        """
+        try:
+            query = f"""
+            SELECT timestamp
+            FROM `{self.project_id}.{dataset_id}.{table_id}`
+            WHERE key = 'last_processed_mention'
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """
+            
+            result = self.query(query)
+            
+            if len(result) > 0:
+                timestamp = pd.to_datetime(result.iloc[0]['timestamp'], utc=True)
+                self.logger.info(f"Retrieved last processed timestamp: {timestamp}")
+                return timestamp
+            else:
+                # Return epoch time if no record found
+                epoch = pd.Timestamp('1970-01-01', tz='UTC')
+                self.logger.info(f"No timestamp found, returning epoch: {epoch}")
+                return epoch
+                
+        except Exception as e:
+            self.logger.error(f"Error getting last processed timestamp: {e}")
+            # Return epoch time on error
+            return pd.Timestamp('1970-01-01', tz='UTC')
+    
+    def update_last_processed_timestamp(self, dataset_id: str, table_id: str, timestamp: pd.Timestamp) -> bool:
+        """
+        Update the last processed timestamp
+        
+        Args:
+            dataset_id: BigQuery dataset ID
+            table_id: BigQuery table ID
+            timestamp: New timestamp to store
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # First, try to update existing record
+            update_query = f"""
+            UPDATE `{self.project_id}.{dataset_id}.{table_id}`
+            SET timestamp = @new_timestamp, updated_at = CURRENT_TIMESTAMP()
+            WHERE key = 'last_processed_mention'
+            """
+            
+            from google.cloud import bigquery
+            job_config = bigquery.QueryJobConfig(
+                query_parameters=[
+                    bigquery.ScalarQueryParameter("new_timestamp", "TIMESTAMP", timestamp)
+                ]
+            )
+            
+            query_job = self.client.query(update_query, job_config=job_config)
+            query_job.result()
+            
+            # Check if update affected any rows
+            if query_job.num_dml_affected_rows == 0:
+                # No rows updated, insert new record
+                self.logger.info("No existing record found, inserting new timestamp")
+                
+                new_data = pd.DataFrame({
+                    'key': ['last_processed_mention'],
+                    'timestamp': [timestamp],
+                    'updated_at': [pd.Timestamp.now(tz='UTC')]
+                })
+                
+                self.append(new_data, dataset_id, table_id, create_if_not_exists=False)
+            
+            self.logger.info(f"Updated last processed timestamp to: {timestamp}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error updating last processed timestamp: {e}")
+            return False
