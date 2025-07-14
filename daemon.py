@@ -35,18 +35,24 @@ class Oracle(bot):
             
             for notif in notifications:
                 if (hasattr(notif, 'reason') and notif.reason == 'mention' and
-                    hasattr(notif, 'uri') and notif.uri and hasattr(notif, 'indexedAt')):
+                    hasattr(notif, 'uri') and notif.uri):
                     
-                    # Parse notification timestamp
-                    notif_timestamp = pd.to_datetime(notif.indexedAt, utc=True)
-                    
-                    # Only process mentions newer than last processed timestamp
-                    if notif_timestamp > self.last_processed_timestamp:
-                        mentions.append(notif.uri)
+                    # Check if timestamp is available for filtering
+                    if hasattr(notif, 'indexedAt') and notif.indexedAt:
+                        # Parse notification timestamp
+                        notif_timestamp = pd.to_datetime(notif.indexedAt, utc=True)
                         
-                        # Track the newest timestamp we've seen
-                        if notif_timestamp > new_latest_timestamp:
-                            new_latest_timestamp = notif_timestamp
+                        # Only process mentions newer than last processed timestamp
+                        if notif_timestamp > self.last_processed_timestamp:
+                            mentions.append(notif.uri)
+                            
+                            # Track the newest timestamp we've seen
+                            if notif_timestamp > new_latest_timestamp:
+                                new_latest_timestamp = notif_timestamp
+                    else:
+                        # No timestamp available - process it (fail-safe)
+                        mentions.append(notif.uri)
+                        logger.info(f"Processing mention without timestamp: {notif.uri}")
             
             # Update our tracking timestamp if we found newer mentions
             if new_latest_timestamp > self.last_processed_timestamp:
