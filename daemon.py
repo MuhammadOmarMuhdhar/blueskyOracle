@@ -16,6 +16,8 @@ class Oracle(bot):
         super().__init__()
         self.processed_mentions = set()
         self.bot_handle = self.bluesky_username
+        # Load recently processed mentions from BigQuery on startup
+        self.load_recent_processed_mentions()
         
     def get_recent_mentions(self):
         """Get recent mentions from notifications"""
@@ -42,6 +44,11 @@ class Oracle(bot):
         """Process a single mention"""
         try:
             logger.info(f"Processing mention: {mention_uri}")
+            
+            # Check if already processed
+            if self.is_mention_already_processed(mention_uri):
+                logger.info(f"Skipping already processed mention: {mention_uri}")
+                return
             
             # Get the actual mention text to check if it's a sources request
             mention_text = self.bluesky_client.get_post_text(mention_uri)
@@ -98,7 +105,7 @@ class Oracle(bot):
     
     def find_fact_check_id_in_thread(self, mention_uri):
         """
-        Find the fact-check ID from bot posts in the thread
+        Find the fact-check ID from bot posts in the thread using BigQuery lookup
         """
         try:
             # Get the thread data to find what this mention is replying to
@@ -106,23 +113,59 @@ class Oracle(bot):
             if not thread_data:
                 return None
             
-            # Get the thread context to find bot posts
-            thread_context = thread_data.get("thread_context", "")
+            # Check if this sources request is replying to a bot post
+            replying_to_author = thread_data.get("replying_to", {}).get("author", "")
             
-            # Also check if we can get the parent post directly
-            # This is a simplified approach - look for bot posts in recent mapping
+            if replying_to_author == self.bluesky_username.replace(".bsky.social", ""):
+                # This is replying to the bot - get the most recent fact-check
+                logger.info("Sources request is replying to bot post - finding recent fact-check")
+                return self.get_most_recent_fact_check_id()
+            
+            # Fallback: check in-memory mapping (for recent posts)
             for post_uri, fact_check_id in self.post_to_factcheck_map.items():
-                # Check if this fact-check post is in the current thread
-                # This is a basic implementation - could be improved
-                if post_uri in thread_context or self.is_post_in_thread(post_uri, mention_uri):
+                if self.is_post_in_thread(post_uri, mention_uri):
                     logger.info(f"Found fact-check ID {fact_check_id} for post {post_uri}")
                     return fact_check_id
             
-            logger.warning("Could not find fact-check ID in thread")
-            return None
+            # Final fallback: get most recent fact-check from BigQuery
+            logger.info("Using fallback: most recent fact-check")
+            return self.get_most_recent_fact_check_id()
             
         except Exception as e:
             logger.error(f"Error finding fact-check ID: {e}")
+            return None
+    
+    def get_most_recent_fact_check_id(self):
+        """
+        Get the most recent fact-check ID from BigQuery
+        """
+        try:
+            if not self.bq_client:
+                return None
+            
+            dataset_id = os.getenv('BIGQUERY_DATASET_ID', 'dataset')
+            table_id = os.getenv('BIGQUERY_TABLE_ID', 'fact-checker')
+            project_id = os.getenv('BIGQUERY_PROJECT_ID')
+            
+            query = f"""
+            SELECT id 
+            FROM `{project_id}.{dataset_id}.{table_id}` 
+            WHERE sources IS NOT NULL AND sources != '[]'
+            ORDER BY timestamp DESC 
+            LIMIT 1
+            """
+            
+            result = self.bq_client.query(query)
+            
+            if len(result) > 0:
+                fact_check_id = result.iloc[0]['id']
+                logger.info(f"Found most recent fact-check ID: {fact_check_id}")
+                return fact_check_id
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting most recent fact-check ID: {e}")
             return None
     
     def is_post_in_thread(self, post_uri, mention_uri):
@@ -142,6 +185,75 @@ class Oracle(bot):
             
             return False
         except Exception:
+            return False
+    
+    def load_recent_processed_mentions(self):
+        """Load recently processed mentions from BigQuery to avoid duplicates"""
+        try:
+            if not self.bq_client:
+                logger.warning("BigQuery not available - using memory-only tracking")
+                return
+            
+            dataset_id = os.getenv('BIGQUERY_DATASET_ID', 'dataset')
+            table_id = os.getenv('BIGQUERY_TABLE_ID', 'fact-checker')
+            project_id = os.getenv('BIGQUERY_PROJECT_ID')
+            
+            # Get fact-checks from the last 24 hours to avoid reprocessing
+            query = f"""
+            SELECT DISTINCT id
+            FROM `{project_id}.{dataset_id}.{table_id}` 
+            WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 24 HOUR)
+            ORDER BY timestamp DESC
+            LIMIT 100
+            """
+            
+            result = self.bq_client.query(query)
+            
+            # Add to processed set (using fact-check IDs as proxy for processed mentions)
+            for _, row in result.iterrows():
+                self.processed_mentions.add(row['id'])
+            
+            logger.info(f"Loaded {len(result)} recent processed mentions from BigQuery")
+            
+        except Exception as e:
+            logger.error(f"Error loading processed mentions: {e}")
+    
+    def is_mention_already_processed(self, mention_uri):
+        """Check if this mention has already been processed"""
+        try:
+            # Check in-memory first (fast)
+            if mention_uri in self.processed_mentions:
+                return True
+            
+            # Check BigQuery for recent processing
+            if not self.bq_client:
+                return False
+            
+            dataset_id = os.getenv('BIGQUERY_DATASET_ID', 'dataset')
+            table_id = os.getenv('BIGQUERY_TABLE_ID', 'fact-checker')
+            project_id = os.getenv('BIGQUERY_PROJECT_ID')
+            
+            # Look for recent fact-checks that might be for this mention
+            # This is a simplified check - could be enhanced
+            query = f"""
+            SELECT COUNT(*) as count
+            FROM `{project_id}.{dataset_id}.{table_id}` 
+            WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 HOUR)
+            AND id IS NOT NULL
+            """
+            
+            result = self.bq_client.query(query)
+            recent_count = result.iloc[0]['count'] if len(result) > 0 else 0
+            
+            # If we've processed many recently, be more conservative
+            if recent_count > 10:
+                logger.warning(f"Many recent fact-checks ({recent_count}) - being conservative about duplicates")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error checking if mention processed: {e}")
             return False
     
     def monitor_loop(self, check_interval=30):
