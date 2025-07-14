@@ -155,8 +155,12 @@ class Client:
             
             # Create reply
             reply_to = models.AppBskyFeedPost.ReplyRef(parent=parent_ref, root=root_ref)
-            self.client.send_post(text=text, reply_to=reply_to)
-            return True
+            response = self.client.send_post(text=text, reply_to=reply_to)
+            
+            # Return the URI of the posted reply
+            if hasattr(response, 'uri'):
+                return response.uri
+            return True  # Fallback for compatibility
             
         except Exception as e:
             print(f"Reply failed: {e}")

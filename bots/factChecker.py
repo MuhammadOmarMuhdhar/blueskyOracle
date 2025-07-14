@@ -29,6 +29,8 @@ class bot:
         self.bluesky_password = bluesky_password or os.getenv('BLUESKY_PASSWORD')
         self.prompt_file = prompt_file  
         
+        # In-memory mapping of post URIs to fact-check IDs for source retrieval
+        self.post_to_factcheck_map = {}
         
         # Validate required credentials
         if not self.gemini_api_key:
@@ -95,36 +97,101 @@ class bot:
     
     def _parse_json_response(self, json_str_to_parse: str, api_key_snippet: str, doi_mapping: dict) -> dict:
         """
-        Robustly parses a JSON string response from the Gemini model, handling the array format
-        and converting numeric DOI/field keys back to original format.
-        Uses simplified JSON extraction approach.
+        Robustly parses a JSON string response from the Gemini model with enhanced error handling
         """
         parsed_json = None
+        
         try:
             # Try direct JSON parsing first
             parsed_json = json.loads(json_str_to_parse)
             logger.info("Successfully parsed JSON directly.")
+            return parsed_json
         except json.JSONDecodeError as e:
-            # Use the simpler extraction method from the second version
-            start_idx = json_str_to_parse.find('{')
-            if json_str_to_parse.find('[') >= 0 and (start_idx == -1 or json_str_to_parse.find('[') < start_idx):
-                # Array format detected
-                start_idx = json_str_to_parse.find('[')
-                end_idx = json_str_to_parse.rfind(']') + 1
-            else:
-                # Object format
-                end_idx = json_str_to_parse.rfind('}') + 1
-            if start_idx >= 0 and end_idx > start_idx:
-                json_str_extracted = json_str_to_parse[start_idx:end_idx]
-                try:
-                    parsed_json = json.loads(json_str_extracted)
-                    logger.info("Successfully parsed JSON after extraction.")
-                except json.JSONDecodeError as e_extract:
-                    raise ValueError(f"Could not extract valid JSON from response for API key {api_key_snippet}: {e_extract}")
-            else:
-                raise ValueError(f"Could not find valid JSON object in response for API key {api_key_snippet}")
+            logger.warning(f"Direct JSON parsing failed: {e}")
         
-        return parsed_json
+        # Enhanced extraction with cleanup
+        try:
+            # Clean up common JSON formatting issues
+            cleaned_json = self._clean_json_string(json_str_to_parse)
+            
+            # Extract JSON object
+            start_idx = cleaned_json.find('{')
+            if start_idx == -1:
+                raise ValueError("No JSON object found in response")
+            
+            # Find matching closing brace
+            brace_count = 0
+            end_idx = start_idx
+            for i, char in enumerate(cleaned_json[start_idx:], start_idx):
+                if char == '{':
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        end_idx = i + 1
+                        break
+            
+            if brace_count != 0:
+                # Fallback to simple method
+                end_idx = cleaned_json.rfind('}') + 1
+            
+            json_str_extracted = cleaned_json[start_idx:end_idx]
+            
+            # Try parsing the extracted JSON
+            parsed_json = json.loads(json_str_extracted)
+            logger.info("Successfully parsed JSON after cleanup and extraction.")
+            return parsed_json
+            
+        except (json.JSONDecodeError, ValueError) as e:
+            # Final fallback - try to create a minimal valid response
+            logger.error(f"All JSON parsing attempts failed: {e}")
+            logger.error(f"Raw response (first 500 chars): {json_str_to_parse[:500]}")
+            
+            # Return a fallback response
+            return {
+                "thinking": "JSON parsing failed - using fallback response",
+                "status": "UNVERIFIABLE", 
+                "category": "OTHER",
+                "response": "Error processing fact-check response. Please try again.",
+                "sources": [],
+                "content_analysis": {
+                    "emotional_tone": "NEUTRAL",
+                    "contains_statistics": False,
+                    "contains_quotes": False,
+                    "contains_dates": False,
+                    "uses_absolutes": False,
+                    "creates_urgency": False,
+                    "appeals_to_authority": False,
+                    "personal_anecdote": False
+                }
+            }
+    
+    def _clean_json_string(self, json_str: str) -> str:
+        """Clean up common JSON formatting issues"""
+        # Remove common prefixes/suffixes that break JSON
+        cleaned = json_str.strip()
+        
+        # Remove markdown code blocks
+        if cleaned.startswith('```json'):
+            cleaned = cleaned[7:]
+        if cleaned.startswith('```'):
+            cleaned = cleaned[3:]
+        if cleaned.endswith('```'):
+            cleaned = cleaned[:-3]
+        
+        # Remove common text before JSON
+        prefixes_to_remove = [
+            "Here's the fact-check response:",
+            "Here is the response:",
+            "Response:",
+            "JSON:",
+        ]
+        
+        for prefix in prefixes_to_remove:
+            if cleaned.lower().startswith(prefix.lower()):
+                cleaned = cleaned[len(prefix):].strip()
+        
+        return cleaned.strip()
     
     def _log_to_bigquery(self, post_url: str, thread_data: Dict[str, Any], result: Dict[str, Any], start_time: float) -> str:
         """Log fact-check result to BigQuery and return the fact-check ID"""
@@ -150,7 +217,7 @@ class bot:
                 'category': result.get('category', ''),
                 'response': result.get('response', ''),
                 'response_length': len(result.get('response', '')),
-                # 'sources': json.dumps(result.get('sources', [])),  # Temporarily disabled until schema updated
+                'sources': json.dumps(result.get('sources', [])),  # Store sources as JSON string
                 'processing_time_ms': int((time.time() - start_time) * 1000),
                 'model_version': 'gemini-2.0-flash-v1',
                 'day_of_week': now.strftime('%A').upper(),
@@ -303,14 +370,23 @@ class bot:
         reply_text = self.format_bluesky_reply(result)
         
         # Post reply
-        success = self.bluesky_client.post_reply(original_post_url, reply_text)
+        reply_result = self.bluesky_client.post_reply(original_post_url, reply_text)
         
-        if success:
+        if reply_result and reply_result != True:  # Got a URI back
+            # Store mapping for source retrieval
+            fact_check_id = result.get('fact_check_id')
+            if fact_check_id:
+                self.post_to_factcheck_map[reply_result] = fact_check_id
+                logger.info(f"Stored mapping: {reply_result} -> {fact_check_id}")
+            
             logger.info(f"Successfully posted fact-check reply to {original_post_url}")
+            return True
+        elif reply_result == True:  # Old-style boolean return
+            logger.info(f"Successfully posted fact-check reply to {original_post_url}")
+            return True
         else:
             logger.error(f"Failed to post reply to {original_post_url}")
-            
-        return success
+            return False
     
     def get_sources_by_id(self, fact_check_id: str) -> list:
         """
