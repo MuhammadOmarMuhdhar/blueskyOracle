@@ -1,0 +1,22 @@
+services:
+  - type: worker
+    name: bsky-oracle-bot
+    env: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python daemon.py
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: BLUESKY_USERNAME  
+        sync: false
+      - key: BLUESKY_PASSWORD
+        sync: false
+      - key: BIGQUERY_PROJECT_ID
+        sync: false
+      - key: BIGQUERY_DATASET_ID
+        sync: false
+      - key: BIGQUERY_TABLE_ID
+        sync: false
+      - key: BIGQUERY_CREDENTIALS_JSON
+        sync: false
