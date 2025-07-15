@@ -133,7 +133,10 @@ class bot:
         target_info = thread_data.get("target", {})
         context_info = thread_data.get("context", {})
         
+        from datetime import datetime
+        
         prompt = prompt_template.format(
+            current_date=datetime.now().strftime("%Y-%m-%d"),
             request_type=request_info.get("type", "fact_check"),
             requester=request_info.get("requester", "@unknown"),
             request_instruction=request_info.get("instruction", "fact check this"),

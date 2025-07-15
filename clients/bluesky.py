@@ -189,7 +189,7 @@ class Client:
                 return None
             
             # Determine request type and instruction
-            request_instruction = mention_request or ""
+            request_instruction = (mention_request or "").replace("@blueskyoracle.bsky.social", "").strip()
             request_type = "fact_check"
             if "?" in request_instruction:
                 request_type = "question"
