@@ -69,6 +69,21 @@ class Client:
         else:
             uri = url_or_uri
         
+        # Early check: Don't process the bot's own posts
+        try:
+            from atproto import models
+            params = models.AppBskyFeedGetPosts.Params(uris=[uri])
+            response = self.client.app.bsky.feed.get_posts(params=params)
+            if response.posts:
+                post_author = response.posts[0].author.handle
+                bot_handle = self.client.me.handle if hasattr(self.client, 'me') else "blueskyoracle.bsky.social"
+                if post_author == bot_handle:
+                    print(f"Skipping bot's own post: {uri}")
+                    return None
+        except Exception as e:
+            print(f"Error checking post author: {e}")
+            # Continue with normal processing if check fails
+        
         try:
             from atproto import models
             params = models.AppBskyFeedGetPostThread.Params(

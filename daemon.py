@@ -179,6 +179,11 @@ class Oracle(bot):
         try:
             logger.info(f"Processing sources request: {mention_uri}")
             
+            # Check for duplicate sources request (prevent infinite loops)
+            if self.robust_duplicate_check(mention_uri):
+                logger.info(f"Duplicate sources request detected, skipping: {mention_uri}")
+                return
+            
             # Find the bot's fact-check post in the thread context
             fact_check_id = self.find_fact_check_id_in_thread(mention_uri)
             
@@ -187,7 +192,7 @@ class Oracle(bot):
                 sources = self.get_sources_by_id(fact_check_id)
                 sources_response = self.format_sources_response(sources)
             else:
-                sources_response = "Could not find the original fact-check to retrieve sources. Make sure you're replying to one of my fact-check responses."
+                sources_response = "Could not find the original fact-check to retrieve sources. To get sources, please reply 'sources' directly to one of my fact-check responses in the same conversation thread."
             
             success = self.bluesky_client.post_reply(mention_uri, sources_response)
             
@@ -201,31 +206,40 @@ class Oracle(bot):
     
     def find_fact_check_id_in_thread(self, mention_uri):
         """
-        Find the fact-check ID from bot posts in the thread using multiple methods
+        Find the fact-check ID from bot posts in the thread using conservative methods
+        Only matches exact thread relationships to prevent cross-contamination
         """
         try:
-            # Method 1: Check if this mention is replying to a bot post directly
+            # Method 1: Check if this mention is replying directly to a bot post
             thread_data = self.bluesky_client.get_thread_chain(mention_uri)
             if thread_data:
                 # Check if parent is a bot post
                 parent_info = thread_data.get("target", {})
                 if parent_info.get("author") == f"@{self.bluesky_username}":
-                    logger.info("Sources request is replying to bot post - searching for fact-check ID")
+                    logger.info("Sources request is replying directly to bot post - searching for fact-check ID")
                     parent_uri = thread_data.get("replying_to", {}).get("uri")
                     if parent_uri and parent_uri in self.post_to_factcheck_map:
                         fact_check_id = self.post_to_factcheck_map[parent_uri]
-                        logger.info(f"Found fact-check ID from in-memory mapping: {fact_check_id}")
+                        logger.info(f"Found fact-check ID from direct reply mapping: {fact_check_id}")
                         return fact_check_id
+                    else:
+                        logger.warning(f"Bot post found but no fact-check ID in mapping for URI: {parent_uri}")
+                        
+                        # Try to extract fact-check ID from bot post text if available
+                        if parent_uri:
+                            bot_post_text = self.bluesky_client.get_post_text(parent_uri)
+                            if bot_post_text:
+                                logger.info(f"Bot post text: {bot_post_text[:100]}...")
+                                # Could implement ID extraction from post text if needed
             
-            # Method 2: Check in-memory mapping for recent posts
-            for post_uri, fact_check_id in self.post_to_factcheck_map.items():
-                if self.is_post_in_thread(post_uri, mention_uri):
-                    logger.info(f"Found fact-check ID {fact_check_id} for post {post_uri}")
-                    return fact_check_id
+            # Method 2: DISABLED - was causing cross-contamination
+            # The old method was too broad and matched posts from same author regardless of thread
+            logger.info("Skipping broad post mapping check to prevent cross-contamination")
             
-            # Method 3: Final fallback - get most recent fact-check from BigQuery
-            logger.info("Using fallback: most recent fact-check from BigQuery")
-            return self.get_most_recent_fact_check_id()
+            # Method 3: Conservative fallback - ONLY if we can't find direct relationship
+            logger.warning("No direct thread relationship found - sources request may be invalid")
+            logger.info("Consider asking user to reply directly to the bot's fact-check post")
+            return None  # Don't use BigQuery fallback to avoid wrong associations
             
         except Exception as e:
             logger.error(f"Error finding fact-check ID: {e}")
@@ -266,21 +280,38 @@ class Oracle(bot):
     
     def is_post_in_thread(self, post_uri, mention_uri):
         """
-        Check if a post is in the same thread as a mention
-        Simplified implementation
+        Check if a post is in the same conversation thread as a mention
+        Uses proper thread traversal to avoid cross-contamination
         """
         try:
-            # Basic check - extract thread info from URIs
-            # This is a simplified approach that could be improved
-            mention_parts = mention_uri.split('/')
-            post_parts = post_uri.split('/')
+            # Get the thread data for the mention to see the conversation
+            thread_data = self.bluesky_client.get_thread_chain(mention_uri)
+            if not thread_data:
+                return False
             
-            # Check if they're from the same author (basic thread detection)
-            if len(mention_parts) > 2 and len(post_parts) > 2:
-                return mention_parts[2] == post_parts[2]  # Same DID
+            # Check if the post_uri appears anywhere in the conversation
+            conversation = thread_data.get("context", {}).get("conversation", [])
+            
+            # Also check the replying_to URI
+            replying_to_uri = thread_data.get("replying_to", {}).get("uri")
+            
+            # The post_uri should match either:
+            # 1. The direct parent (replying_to)
+            # 2. One of the posts in the conversation thread
+            if replying_to_uri == post_uri:
+                logger.info(f"Found exact URI match in thread: {post_uri}")
+                return True
+            
+            # Check conversation context
+            for conv_post in conversation:
+                # This is a more conservative check - we need actual URI matching
+                # For now, return False to be safe and avoid cross-contamination
+                pass
             
             return False
-        except Exception:
+            
+        except Exception as e:
+            logger.error(f"Error checking if post is in thread: {e}")
             return False
     
     def init_timestamp_tracking(self):
