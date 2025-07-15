@@ -16,6 +16,7 @@ class Oracle(bot):
     def __init__(self):
         super().__init__()
         self.processed_mentions = set()
+        self.processing_timestamps = {}  # Track when mentions were processed
         self.bot_handle = self.bluesky_username
         self.last_processed_timestamp = None
         # Initialize timestamp-based duplicate prevention
@@ -92,8 +93,8 @@ class Oracle(bot):
                 self.handle_sources_request(mention_uri)
             else:
                 # Regular fact-check request - check if we already replied to this mention
-                if self.bluesky_client.has_bot_already_replied(mention_uri, self.bluesky_username):
-                    logger.info(f"Bot already replied to mention {mention_uri}, skipping")
+                if self.robust_duplicate_check(mention_uri):
+                    logger.info(f"Duplicate detected for mention {mention_uri}, skipping")
                     return
                 
                 # Proceed with fact-check
@@ -103,12 +104,75 @@ class Oracle(bot):
                     logger.info(f"Successfully replied to {mention_uri}")
                 else:
                     logger.warning(f"Failed to reply to {mention_uri}")
-                
-            # Track processed mentions in current session
-            self.processed_mentions.add(mention_uri)
             
         except Exception as e:
             logger.error(f"Error handling mention {mention_uri}: {e}")
+    
+    def robust_duplicate_check(self, mention_uri):
+        """Robust duplicate prevention with conservative bias and multiple fallbacks"""
+        import requests
+        import time
+        from datetime import datetime, timedelta
+        
+        try:
+            # Layer 1: Fast in-memory check
+            if mention_uri in self.processed_mentions:
+                logger.info(f"Duplicate found in memory: {mention_uri}")
+                return True
+            
+            # Layer 2: API check with retry and conservative error handling
+            for attempt in range(2):  # 2 attempts max
+                try:
+                    if self.bluesky_client.has_bot_already_replied(mention_uri, self.bluesky_username):
+                        logger.info(f"Duplicate found via API: {mention_uri}")
+                        return True
+                    # API succeeded and returned False - proceed to next layer
+                    logger.debug(f"API check passed (attempt {attempt + 1}): {mention_uri}")
+                    break
+                    
+                except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                    logger.warning(f"API error attempt {attempt + 1} for {mention_uri}: {e}")
+                    if attempt == 1:  # Last attempt
+                        logger.warning(f"API check failed - CONSERVATIVELY assuming duplicate: {mention_uri}")
+                        return True  # Conservative: assume already replied
+                    time.sleep(2)  # Brief wait before retry
+                    
+                except Exception as e:
+                    logger.error(f"Unexpected error in duplicate check for {mention_uri}: {e}")
+                    logger.warning(f"CONSERVATIVELY assuming duplicate due to error: {mention_uri}")
+                    return True  # Conservative: assume already replied
+            
+            # Layer 3: Recent processing cooldown (simple time-based protection)
+            if self.is_recently_processed(mention_uri, cooldown_minutes=5):
+                logger.info(f"Mention in cooldown period: {mention_uri}")
+                return True
+            
+            # All checks passed - mark as processed and proceed
+            self.processed_mentions.add(mention_uri)
+            self.processing_timestamps[mention_uri] = datetime.now()
+            logger.info(f"No duplicate found - proceeding with: {mention_uri}")
+            return False
+            
+        except Exception as e:
+            logger.error(f"Critical error in robust_duplicate_check for {mention_uri}: {e}")
+            # Ultimate fallback - assume duplicate to prevent processing
+            return True
+    
+    def is_recently_processed(self, mention_uri, cooldown_minutes=5):
+        """Simple time-based cooldown check"""
+        try:
+            if mention_uri in self.processing_timestamps:
+                time_diff = (datetime.now() - self.processing_timestamps[mention_uri]).total_seconds() / 60
+                if time_diff < cooldown_minutes:
+                    logger.debug(f"Mention {mention_uri} processed {time_diff:.1f} minutes ago (within {cooldown_minutes}min cooldown)")
+                    return True
+                else:
+                    # Clean up old timestamp
+                    del self.processing_timestamps[mention_uri]
+            return False
+        except Exception as e:
+            logger.error(f"Error in cooldown check for {mention_uri}: {e}")
+            return False
     
     def handle_sources_request(self, mention_uri):
         """Handle a request for sources from a previous fact-check"""
