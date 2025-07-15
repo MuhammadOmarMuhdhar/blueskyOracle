@@ -86,10 +86,10 @@ class Oracle(bot):
             mention_text = mention_text.lower().strip()
             
             # Check if this is a sources request
-            if "sources" in mention_text and len(mention_text.replace("@blueskyoracle.bsky.social", "").strip()) <= 10:
-                # Get thread data for sources request
-                thread_data = self.bluesky_client.get_thread_chain(mention_uri)
-                self.handle_sources_request(mention_uri, thread_data)
+            clean_text = mention_text.replace("@blueskyoracle.bsky.social", "").strip()
+            if "sources" in clean_text and len(clean_text) <= 15:
+                logger.info(f"Detected sources request: {mention_uri}")
+                self.handle_sources_request(mention_uri)
             else:
                 # Regular fact-check request - check if we already replied to this mention
                 if self.bluesky_client.has_bot_already_replied(mention_uri, self.bluesky_username):
@@ -110,7 +110,7 @@ class Oracle(bot):
         except Exception as e:
             logger.error(f"Error handling mention {mention_uri}: {e}")
     
-    def handle_sources_request(self, mention_uri, thread_data):
+    def handle_sources_request(self, mention_uri):
         """Handle a request for sources from a previous fact-check"""
         try:
             logger.info(f"Processing sources request: {mention_uri}")
@@ -137,30 +137,30 @@ class Oracle(bot):
     
     def find_fact_check_id_in_thread(self, mention_uri):
         """
-        Find the fact-check ID from bot posts in the thread using BigQuery lookup
+        Find the fact-check ID from bot posts in the thread using multiple methods
         """
         try:
-            # Get the thread data to find what this mention is replying to
+            # Method 1: Check if this mention is replying to a bot post directly
             thread_data = self.bluesky_client.get_thread_chain(mention_uri)
-            if not thread_data:
-                return None
+            if thread_data:
+                # Check if parent is a bot post
+                parent_info = thread_data.get("target", {})
+                if parent_info.get("author") == f"@{self.bluesky_username}":
+                    logger.info("Sources request is replying to bot post - searching for fact-check ID")
+                    parent_uri = thread_data.get("replying_to", {}).get("uri")
+                    if parent_uri and parent_uri in self.post_to_factcheck_map:
+                        fact_check_id = self.post_to_factcheck_map[parent_uri]
+                        logger.info(f"Found fact-check ID from in-memory mapping: {fact_check_id}")
+                        return fact_check_id
             
-            # Check if this sources request is replying to a bot post
-            replying_to_author = thread_data.get("replying_to", {}).get("author", "")
-            
-            if replying_to_author == self.bluesky_username.replace(".bsky.social", ""):
-                # This is replying to the bot - get the most recent fact-check
-                logger.info("Sources request is replying to bot post - finding recent fact-check")
-                return self.get_most_recent_fact_check_id()
-            
-            # Fallback: check in-memory mapping (for recent posts)
+            # Method 2: Check in-memory mapping for recent posts
             for post_uri, fact_check_id in self.post_to_factcheck_map.items():
                 if self.is_post_in_thread(post_uri, mention_uri):
                     logger.info(f"Found fact-check ID {fact_check_id} for post {post_uri}")
                     return fact_check_id
             
-            # Final fallback: get most recent fact-check from BigQuery
-            logger.info("Using fallback: most recent fact-check")
+            # Method 3: Final fallback - get most recent fact-check from BigQuery
+            logger.info("Using fallback: most recent fact-check from BigQuery")
             return self.get_most_recent_fact_check_id()
             
         except Exception as e:
