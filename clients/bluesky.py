@@ -71,41 +71,142 @@ class Client:
         
         try:
             from atproto import models
-            params = models.AppBskyFeedGetPostThread.Params(uri=uri, parent_height=10)
+            params = models.AppBskyFeedGetPostThread.Params(
+                uri=uri, 
+                depth=6,        # Get replies
+                parentHeight=10 # Get parent context
+            )
             thread = self.client.app.bsky.feed.get_post_thread(params=params)
             
-            posts = []
+            conversation = []
             target_post = None
             target_author = None
+            mention_request = None
+            mention_author = None
             
-            # Collect all posts in thread order
-            def collect_posts(view, is_target=False):
-                nonlocal target_post, target_author
+            # Helper to extract post data
+            def extract_post_data(view):
                 if hasattr(view, 'post') and hasattr(view.post, 'record'):
-                    author = view.post.author.handle
-                    text = view.post.record.text
-                    
-                    if is_target:
-                        target_post = text
-                        target_author = author
-                    else:
-                        posts.append(f"@{author}: {text}")
+                    return {
+                        "author": f"@{view.post.author.handle}",
+                        "content": view.post.record.text,
+                        "timestamp": getattr(view.post.record, 'createdAt', '')
+                    }
+                return None
             
-            # Get the current post (user's request - this becomes context)
-            collect_posts(thread.thread, is_target=False)
+            # Get current post (the mention request)
+            current_post = extract_post_data(thread.thread)
+            if current_post:
+                mention_request = current_post["content"]
+                mention_author = current_post["author"]
+                conversation.append({
+                    **current_post,
+                    "role": "fact_check_request"
+                })
             
-            # Get parent post (the one to fact-check)
+            # Get parent post and traverse to find the original claim
             if hasattr(thread.thread, 'parent'):
-                collect_posts(thread.thread.parent, is_target=True)
+                parent_post = extract_post_data(thread.thread.parent)
+                if parent_post:
+                    # Check if parent is a bot reply - if so, look for grandparent
+                    bot_handle = f"@{self.client.me.handle}" if hasattr(self.client, 'me') else "@blueskyoracle.bsky.social"
+                    if parent_post["author"] == bot_handle:
+                        # Parent is bot reply, look for grandparent (the real target)
+                        if hasattr(thread.thread.parent, 'parent'):
+                            grandparent_post = extract_post_data(thread.thread.parent.parent)
+                            if grandparent_post:
+                                target_post = grandparent_post["content"]
+                                target_author = grandparent_post["author"]
+                                conversation.insert(0, {
+                                    **grandparent_post,
+                                    "role": "original_claim"
+                                })
+                                # Add bot reply as discussion context
+                                conversation.insert(1, {
+                                    **parent_post,
+                                    "role": "bot_previous_reply"
+                                })
+                            else:
+                                # Fallback: use bot reply content but mark it properly
+                                target_post = parent_post["content"]
+                                target_author = parent_post["author"]
+                                conversation.insert(0, {
+                                    **parent_post,
+                                    "role": "bot_previous_reply"
+                                })
+                        else:
+                            # No grandparent, use bot reply but mark it
+                            target_post = parent_post["content"]
+                            target_author = parent_post["author"]
+                            conversation.insert(0, {
+                                **parent_post,
+                                "role": "bot_previous_reply"
+                            })
+                    else:
+                        # Parent is not bot, use it as target
+                        target_post = parent_post["content"]
+                        target_author = parent_post["author"]
+                        conversation.insert(0, {
+                            **parent_post,
+                            "role": "original_claim"
+                        })
+                        
+                        # Still check for grandparent for additional context
+                        if hasattr(thread.thread.parent, 'parent'):
+                            grandparent_post = extract_post_data(thread.thread.parent.parent)
+                            if grandparent_post:
+                                conversation.insert(0, {
+                                    **grandparent_post,
+                                    "role": "discussion"
+                                })
+            
+            # If no parent, the current post itself might be the target
+            if not target_post and current_post:
+                target_post = current_post["content"]
+                target_author = current_post["author"]
             
             if not target_post:
                 return None
-                
+            
+            # Don't fact-check the bot's own posts
+            bot_handle = f"@{self.client.me.handle}" if hasattr(self.client, 'me') else "@blueskyoracle.bsky.social"
+            if target_author == bot_handle:
+                return None
+            
+            # Determine request type and instruction
+            request_instruction = mention_request or ""
+            request_type = "fact_check"
+            if "?" in request_instruction:
+                request_type = "question"
+            
+            # Determine target post type
+            target_post_type = "statement"
+            if "http" in target_post:
+                target_post_type = "article_share"
+            elif target_post.startswith("@"):
+                target_post_type = "reply"
+            
             return {
-                "thread_context": "\n\n".join(posts) if posts else "",
+                "request": {
+                    "type": request_type,
+                    "requester": mention_author or "@unknown",
+                    "instruction": request_instruction
+                },
+                "target": {
+                    "author": target_author or "@unknown",
+                    "content": target_post,
+                    "post_type": target_post_type
+                },
+                "context": {
+                    "conversation": conversation,
+                    "thread_summary": f"Discussion thread with {len(conversation)} posts"
+                },
+                # Keep legacy format for backward compatibility
+                "thread_context": "\n\n".join([f"{p['author']}: {p['content']}" for p in conversation]),
                 "replying_to": {
                     "text": target_post,
-                    "author": target_author
+                    "author": target_author,
+                    "uri": uri
                 }
             }
             

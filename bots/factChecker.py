@@ -128,11 +128,19 @@ class bot:
         with open(self.prompt_file, 'r') as f:
             prompt_template = f.read()
             
-        # Format prompt with thread data
+        # Format prompt with structured thread data
+        request_info = thread_data.get("request", {})
+        target_info = thread_data.get("target", {})
+        context_info = thread_data.get("context", {})
+        
         prompt = prompt_template.format(
-            thread_context=thread_data.get("thread_context", ""),
-            replying_to_text=thread_data["replying_to"]["text"],
-            replying_to_author=thread_data["replying_to"]["author"]
+            request_type=request_info.get("type", "fact_check"),
+            requester=request_info.get("requester", "@unknown"),
+            request_instruction=request_info.get("instruction", "fact check this"),
+            target_content=target_info.get("content", ""),
+            target_author=target_info.get("author", "@unknown"),
+            target_post_type=target_info.get("post_type", "statement"),
+            conversation_summary=context_info.get("thread_summary", "No additional context")
         )
         
         # Query Gemini for fact-check
@@ -482,8 +490,8 @@ class bot:
         
         # Remove all types of numbered citations in brackets including preceding space
         import re
-        # Remove patterns like [1], [2, 3], [1, 2], [2, 5], etc. with optional preceding space
-        response = re.sub(r'\s*\[\s*\d+(?:\s*,\s*\d+)*\s*\]', '', response)
+        # Remove patterns like [1], [2, 3], [i], [ii], [a], [b], etc. with optional preceding space
+        response = re.sub(r'\s*\[\s*[a-zA-Z0-9]+(?:\s*,\s*[a-zA-Z0-9]+)*\s*\]', '', response)
         
         # Remove quotation marks
         response = response.replace('"', '').replace("'", "")
