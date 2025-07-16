@@ -86,8 +86,8 @@ class Oracle(bot):
             
             mention_text = mention_text.lower().strip()
             
-            # Check if this is a sources request
-            clean_text = mention_text.replace("@haqiqa.bsky.social", "").strip()
+            # Check if this is a sources request (keep @ symbols for context)
+            clean_text = mention_text.strip()
             if "sources" in clean_text and len(clean_text) <= 15:
                 logger.info(f"Detected sources request: {mention_uri}")
                 self.handle_sources_request(mention_uri)
@@ -215,7 +215,10 @@ class Oracle(bot):
             if thread_data:
                 # Check if parent is a bot post
                 parent_info = thread_data.get("target", {})
-                if parent_info.get("author") == f"@{self.bluesky_username}":
+                # Check both with and without @ symbol since we strip @ in thread parsing
+                parent_author = parent_info.get("author", "")
+                bot_identifiers = [f"@{self.bluesky_username}", self.bluesky_username, f"@haqiqa.bsky.social", "haqiqa.bsky.social"]
+                if parent_author in bot_identifiers:
                     logger.info("Sources request is replying directly to bot post - searching for fact-check ID")
                     parent_uri = thread_data.get("replying_to", {}).get("uri")
                     if parent_uri and parent_uri in self.post_to_factcheck_map:
@@ -225,12 +228,15 @@ class Oracle(bot):
                     else:
                         logger.warning(f"Bot post found but no fact-check ID in mapping for URI: {parent_uri}")
                         
-                        # Try to extract fact-check ID from bot post text if available
+                        # Fallback: Try to find fact-check ID from BigQuery using parent post content
                         if parent_uri:
                             bot_post_text = self.bluesky_client.get_post_text(parent_uri)
                             if bot_post_text:
                                 logger.info(f"Bot post text: {bot_post_text[:100]}...")
-                                # Could implement ID extraction from post text if needed
+                                fact_check_id = self._find_fact_check_id_by_response_text(bot_post_text)
+                                if fact_check_id:
+                                    logger.info(f"Found fact-check ID from BigQuery fallback: {fact_check_id}")
+                                    return fact_check_id
             
             # Method 2: DISABLED - was causing cross-contamination
             # The old method was too broad and matched posts from same author regardless of thread
@@ -243,6 +249,61 @@ class Oracle(bot):
             
         except Exception as e:
             logger.error(f"Error finding fact-check ID: {e}")
+            return None
+    
+    def _find_fact_check_id_by_response_text(self, response_text: str) -> str:
+        """
+        Find fact-check ID from BigQuery by matching response text
+        """
+        try:
+            if not self.bq_client:
+                logger.warning("BigQuery not available for fact-check ID lookup")
+                return None
+            
+            dataset_id = os.getenv('BIGQUERY_DATASET_ID', 'fact_checks')
+            table_id = os.getenv('BIGQUERY_TABLE_ID', 'responses')
+            project_id = os.getenv('BIGQUERY_PROJECT_ID')
+            
+            # Clean the response text for comparison (remove quotes, normalize whitespace)
+            clean_response = response_text.replace('"', '').replace("'", "").strip()
+            
+            # Search for fact-checks with similar response text from the last 24 hours
+            query = f"""
+            SELECT id, response, timestamp
+            FROM `{project_id}.{dataset_id}.{table_id}` 
+            WHERE timestamp >= DATETIME_SUB(CURRENT_DATETIME(), INTERVAL 24 HOUR)
+            AND LENGTH(response) > 50
+            ORDER BY timestamp DESC
+            LIMIT 20
+            """
+            
+            result = self.bq_client.query(query)
+            
+            if len(result) > 0:
+                # Look for best match by comparing response text
+                for _, row in result.iterrows():
+                    stored_response = row.get('response', '').replace('"', '').replace("'", "").strip()
+                    
+                    # Simple similarity check - if responses share significant content
+                    if len(stored_response) > 50 and len(clean_response) > 50:
+                        # Check if they share at least 70% of words
+                        response_words = set(clean_response.lower().split())
+                        stored_words = set(stored_response.lower().split())
+                        
+                        if len(response_words) > 5 and len(stored_words) > 5:
+                            common_words = response_words.intersection(stored_words)
+                            similarity = len(common_words) / min(len(response_words), len(stored_words))
+                            
+                            if similarity > 0.7:
+                                fact_check_id = row.get('id')
+                                logger.info(f"Found matching fact-check ID: {fact_check_id} (similarity: {similarity:.2f})")
+                                return fact_check_id
+            
+            logger.warning("No matching fact-check found in BigQuery")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error finding fact-check ID by response text: {e}")
             return None
     
     def get_most_recent_fact_check_id(self):
