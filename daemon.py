@@ -87,7 +87,7 @@ class Oracle(bot):
             mention_text = mention_text.lower().strip()
             
             # Check if this is a sources request
-            clean_text = mention_text.replace("@blueskyoracle.bsky.social", "").strip()
+            clean_text = mention_text.replace("@haqiqa.bsky.social", "").strip()
             if "sources" in clean_text and len(clean_text) <= 15:
                 logger.info(f"Detected sources request: {mention_uri}")
                 self.handle_sources_request(mention_uri)

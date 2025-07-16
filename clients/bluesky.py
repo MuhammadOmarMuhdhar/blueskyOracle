@@ -76,7 +76,7 @@ class Client:
             response = self.client.app.bsky.feed.get_posts(params=params)
             if response.posts:
                 post_author = response.posts[0].author.handle
-                bot_handle = self.client.me.handle if hasattr(self.client, 'me') else "blueskyoracle.bsky.social"
+                bot_handle = self.client.me.handle if hasattr(self.client, 'me') else "haqiqa.bsky.social"
                 if post_author == bot_handle:
                     print(f"Skipping bot's own post: {uri}")
                     return None
@@ -124,7 +124,7 @@ class Client:
                 parent_post = extract_post_data(thread.thread.parent)
                 if parent_post:
                     # Check if parent is a bot reply - if so, look for grandparent
-                    bot_handle = f"@{self.client.me.handle}" if hasattr(self.client, 'me') else "@blueskyoracle.bsky.social"
+                    bot_handle = f"@{self.client.me.handle}" if hasattr(self.client, 'me') else "@haqiqa.bsky.social"
                     if parent_post["author"] == bot_handle:
                         # Parent is bot reply, look for grandparent (the real target)
                         if hasattr(thread.thread.parent, 'parent'):
@@ -184,12 +184,12 @@ class Client:
                 return None
             
             # Don't fact-check the bot's own posts
-            bot_handle = f"@{self.client.me.handle}" if hasattr(self.client, 'me') else "@blueskyoracle.bsky.social"
+            bot_handle = f"@{self.client.me.handle}" if hasattr(self.client, 'me') else "@haqiqa.bsky.social"
             if target_author == bot_handle:
                 return None
             
             # Determine request type and instruction
-            request_instruction = (mention_request or "").replace("@blueskyoracle.bsky.social", "").strip()
+            request_instruction = (mention_request or "").replace("@haqiqa.bsky.social", "").strip()
             request_type = "fact_check"
             if "?" in request_instruction:
                 request_type = "question"
