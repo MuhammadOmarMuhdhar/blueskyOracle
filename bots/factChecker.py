@@ -577,7 +577,7 @@ class bot:
     
     def format_sources_response(self, sources: list) -> str:
         """
-        Format sources list into a readable Bluesky reply
+        Format sources list into a readable Bluesky reply with article names and publishers only
         
         Args:
             sources: List of source dictionaries from BigQuery
@@ -591,18 +591,10 @@ class bot:
         response_parts = ["Sources for this fact-check:"]
         
         for i, source in enumerate(sources[:5], 1):  # Limit to 5 sources
-            title = source.get('title', 'Source')
-            url = source.get('url', '')
-            publisher = source.get('publisher', '')
+            title = source.get('title', 'Unknown Article')
+            publisher = source.get('publisher', 'Unknown Publisher')
             
-            if publisher:
-                source_line = f"{i}. {title} - {publisher}"
-            else:
-                source_line = f"{i}. {title}"
-            
-            if url:
-                source_line += f"\n{url}"
-            
+            source_line = f"{i}. {title} - {publisher}"
             response_parts.append(source_line)
         
         full_response = "\n\n".join(response_parts)
@@ -612,10 +604,12 @@ class bot:
             # Try shorter format
             response_parts = ["Sources:"]
             for i, source in enumerate(sources[:3], 1):
-                url = source.get('url', '')
                 title = source.get('title', f'Source {i}')
-                if url:
-                    response_parts.append(f"{i}. {title[:50]}...\n{url}")
+                publisher = source.get('publisher', '')
+                if publisher:
+                    response_parts.append(f"{i}. {title[:40]}... - {publisher}")
+                else:
+                    response_parts.append(f"{i}. {title[:50]}...")
             
             full_response = "\n\n".join(response_parts)
             
