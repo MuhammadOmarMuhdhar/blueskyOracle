@@ -138,10 +138,10 @@ class bot:
         prompt = prompt_template.format(
             current_date=datetime.now().strftime("%Y-%m-%d"),
             request_type=request_info.get("type", "fact_check"),
-            requester=request_info.get("requester", "@unknown"),
+            requester=request_info.get("requester", "@unknown").replace("@", ""),
             request_instruction=request_info.get("instruction", "fact check this"),
             target_content=target_info.get("content", ""),
-            target_author=target_info.get("author", "@unknown"),
+            target_author=target_info.get("author", "@unknown").replace("@", ""),
             target_post_type=target_info.get("post_type", "statement"),
             conversation_summary=context_info.get("thread_summary", "No additional context")
         )
@@ -216,6 +216,25 @@ class bot:
             logger.error(f"All JSON parsing attempts failed: {e}")
             logger.error(f"Raw response (first 500 chars): {json_str_to_parse[:500]}")
             
+            # Debug: Log the cleaned JSON as well
+            try:
+                cleaned_debug = self._clean_json_string(json_str_to_parse)
+                logger.error(f"Cleaned JSON (first 500 chars): {cleaned_debug[:500]}")
+                
+                # Try to find where exactly it fails
+                start_idx = cleaned_debug.find('{')
+                if start_idx != -1:
+                    logger.error(f"JSON starts at position {start_idx}")
+                    # Show a bit more context around the failure point
+                    if hasattr(e, 'pos'):
+                        error_pos = getattr(e, 'pos', 0)
+                        logger.error(f"Error at position {error_pos}")
+                        context_start = max(0, error_pos - 50)
+                        context_end = min(len(cleaned_debug), error_pos + 50)
+                        logger.error(f"Context around error: {cleaned_debug[context_start:context_end]}")
+            except Exception as debug_e:
+                logger.error(f"Debug logging failed: {debug_e}")
+            
             # Return a fallback response
             return {
                 "thinking": "JSON parsing failed - using fallback response",
@@ -237,6 +256,8 @@ class bot:
     
     def _clean_json_string(self, json_str: str) -> str:
         """Clean up common JSON formatting issues"""
+        import re
+        
         # Remove common prefixes/suffixes that break JSON
         cleaned = json_str.strip()
         
@@ -260,7 +281,98 @@ class bot:
             if cleaned.lower().startswith(prefix.lower()):
                 cleaned = cleaned[len(prefix):].strip()
         
+        # Handle control characters and escape sequences
+        # Replace problematic control characters
+        cleaned = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', cleaned)
+        
+        # Fix @ symbols that can break JSON parsing
+        # Escape @ symbols that appear unescaped in string values
+        cleaned = self._fix_at_symbols(cleaned)
+        
+        # Remove citation brackets that break JSON
+        cleaned = self._remove_citation_brackets(cleaned)
+        
+        # Fix common JSON escaping issues
+        # Handle unescaped quotes within strings (basic fix)
+        cleaned = self._fix_unescaped_quotes(cleaned)
+        
+        # Don't escape newlines - JSON parsing can handle proper line breaks
+        # Only escape problematic characters that are actually inside string values
+        cleaned = re.sub(r'[\r\t]', ' ', cleaned)  # Replace tabs and carriage returns with spaces
+        
         return cleaned.strip()
+    
+    def _remove_citation_brackets(self, json_str: str) -> str:
+        """Remove citation brackets like [1], [2, 3] from JSON string values"""
+        import re
+        
+        try:
+            # Remove citation patterns from anywhere in the JSON
+            # Patterns like [1], [2, 3], [i], [ii], [a], [b], etc.
+            cleaned = re.sub(r'\s*\[\s*[a-zA-Z0-9]+(?:\s*,\s*[a-zA-Z0-9]+)*\s*\]', '', json_str)
+            return cleaned
+            
+        except Exception as e:
+            # If anything fails, return original
+            return json_str
+    
+    def _fix_at_symbols(self, json_str: str) -> str:
+        """Fix @ symbols that can break JSON parsing by removing them from string values"""
+        import re
+        
+        try:
+            # Pattern to find JSON string values and remove @ symbols from them
+            def clean_string_value(match):
+                field_name = match.group(1)
+                value_content = match.group(2)
+                # Remove @ symbols from the value content
+                cleaned_value = value_content.replace('@', '')
+                return f'"{field_name}": "{cleaned_value}"'
+            
+            # Match JSON field patterns like "field": "value@with@symbols"
+            pattern = r'"([^"]+)":\s*"([^"]*@[^"]*)"'
+            cleaned = re.sub(pattern, clean_string_value, json_str)
+            
+            return cleaned
+            
+        except Exception as e:
+            # If anything fails, return original
+            return json_str
+    
+    def _fix_unescaped_quotes(self, json_str: str) -> str:
+        """Fix unescaped quotes within JSON string values"""
+        import re
+        
+        try:
+            # Simple approach: escape all unescaped quotes except field boundaries
+            lines = json_str.split('\n')
+            fixed_lines = []
+            
+            for line in lines:
+                # Skip lines that don't have JSON field patterns
+                if '": "' not in line:
+                    fixed_lines.append(line)
+                    continue
+                    
+                # For lines with JSON fields, be more careful
+                # Pattern: find the value part of "field": "value"
+                match = re.match(r'^(\s*"[^"]+"\s*:\s*")([^"]*(?:[^\\"]|\\.)*)("\s*,?\s*)$', line)
+                if match:
+                    prefix = match.group(1)  # "field": "
+                    value = match.group(2)   # the value content
+                    suffix = match.group(3)  # ",
+                    
+                    # Escape unescaped quotes in the value
+                    fixed_value = re.sub(r'(?<!\\)"', '\\"', value)
+                    line = prefix + fixed_value + suffix
+                
+                fixed_lines.append(line)
+            
+            return '\n'.join(fixed_lines)
+            
+        except Exception as e:
+            # If anything fails, return original
+            return json_str
     
     def _validate_source_urls(self, sources: List[Dict[str, Any]]) -> List[str]:
         """
@@ -496,6 +608,10 @@ class bot:
         # Remove patterns like [1], [2, 3], [i], [ii], [a], [b], etc. with optional preceding space
         response = re.sub(r'\s*\[\s*[a-zA-Z0-9]+(?:\s*,\s*[a-zA-Z0-9]+)*\s*\]', '', response)
         
+        # Also clean up the response during JSON processing before it gets here
+        if isinstance(fact_check_result.get("response"), str):
+            fact_check_result["response"] = re.sub(r'\s*\[\s*[a-zA-Z0-9]+(?:\s*,\s*[a-zA-Z0-9]+)*\s*\]', '', fact_check_result["response"])
+        
         # Remove quotation marks
         response = response.replace('"', '').replace("'", "")
         
@@ -567,7 +683,16 @@ class bot:
             if len(result) > 0 and 'sources' in result.columns:
                 sources_json = result.iloc[0]['sources']
                 if sources_json:
-                    return json.loads(sources_json)
+                    try:
+                        return json.loads(sources_json)
+                    except json.JSONDecodeError:
+                        # Try to clean the JSON before parsing
+                        cleaned_json = self._clean_json_string(sources_json)
+                        try:
+                            return json.loads(cleaned_json)
+                        except json.JSONDecodeError:
+                            logger.warning(f"Could not parse sources JSON: {sources_json[:100]}")
+                            return []
             
             return []
             
