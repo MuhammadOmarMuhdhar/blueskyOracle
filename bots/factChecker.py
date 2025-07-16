@@ -13,7 +13,7 @@ from clients.bluesky import Client as BlueskyClient
 from clients.bigQuery import Client as BigQueryClient
 
 # Load environment variables
-load_dotenv()
+load_dotenv(override=True)
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
