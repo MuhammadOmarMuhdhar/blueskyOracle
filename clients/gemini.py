@@ -2,7 +2,7 @@ import time
 from google import genai
 
 class Client:
-    def __init__(self, api_key, model_name="gemini-2.0-flash"):
+    def __init__(self, api_key, model_name="gemini-2.5-flash"):
         self.api_key = api_key
         self.model_name = model_name
         self.cache = {}

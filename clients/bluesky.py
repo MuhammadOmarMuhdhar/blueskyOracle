@@ -119,61 +119,73 @@ class Client:
                     "role": "fact_check_request"
                 })
             
-            # Get parent post and traverse to find the original claim
-            if hasattr(thread.thread, 'parent'):
+            # Traverse the thread to find the root post and build conversation context
+            def traverse_thread_to_root(current_thread):
+                """Traverse thread backwards to find root post and build full context"""
+                thread_chain = []
+                current = current_thread
+                bot_handle = f"@{self.client.me.handle}" if hasattr(self.client, 'me') else "@haqiqa.bsky.social"
+                
+                # Traverse backwards through the thread
+                while current and hasattr(current, 'parent'):
+                    parent_post = extract_post_data(current.parent)
+                    if parent_post:
+                        thread_chain.insert(0, parent_post)  # Insert at beginning to maintain order
+                    current = current.parent
+                
+                # Now analyze the chain to find the original claim and context
+                root_post = None
+                bot_replies = []
+                other_posts = []
+                
+                for post in thread_chain:
+                    if post["author"] == bot_handle:
+                        bot_replies.append(post)
+                    else:
+                        other_posts.append(post)
+                
+                # The root post is the first non-bot post in the chain
+                if other_posts:
+                    root_post = other_posts[0]
+                
+                return root_post, bot_replies, other_posts
+            
+            # Get thread context
+            root_post, bot_replies, other_posts = traverse_thread_to_root(thread.thread)
+            
+            # Set target post - prefer root post if available
+            if root_post:
+                target_post = root_post["content"]
+                target_author = root_post["author"]
+                conversation.insert(0, {
+                    **root_post,
+                    "role": "original_claim"
+                })
+                
+                # Add other context posts
+                for i, post in enumerate(other_posts[1:], 1):  # Skip root post
+                    conversation.insert(i, {
+                        **post,
+                        "role": "discussion"
+                    })
+                
+                # Add bot replies for context
+                for bot_reply in bot_replies:
+                    conversation.append({
+                        **bot_reply,
+                        "role": "bot_previous_reply"
+                    })
+            
+            # Fallback: if no root post found, use direct parent
+            elif hasattr(thread.thread, 'parent'):
                 parent_post = extract_post_data(thread.thread.parent)
                 if parent_post:
-                    # Check if parent is a bot reply - if so, look for grandparent
-                    bot_handle = f"@{self.client.me.handle}" if hasattr(self.client, 'me') else "@haqiqa.bsky.social"
-                    if parent_post["author"] == bot_handle:
-                        # Parent is bot reply, look for grandparent (the real target)
-                        if hasattr(thread.thread.parent, 'parent'):
-                            grandparent_post = extract_post_data(thread.thread.parent.parent)
-                            if grandparent_post:
-                                target_post = grandparent_post["content"]
-                                target_author = grandparent_post["author"]
-                                conversation.insert(0, {
-                                    **grandparent_post,
-                                    "role": "original_claim"
-                                })
-                                # Add bot reply as discussion context
-                                conversation.insert(1, {
-                                    **parent_post,
-                                    "role": "bot_previous_reply"
-                                })
-                            else:
-                                # Fallback: use bot reply content but mark it properly
-                                target_post = parent_post["content"]
-                                target_author = parent_post["author"]
-                                conversation.insert(0, {
-                                    **parent_post,
-                                    "role": "bot_previous_reply"
-                                })
-                        else:
-                            # No grandparent, use bot reply but mark it
-                            target_post = parent_post["content"]
-                            target_author = parent_post["author"]
-                            conversation.insert(0, {
-                                **parent_post,
-                                "role": "bot_previous_reply"
-                            })
-                    else:
-                        # Parent is not bot, use it as target
-                        target_post = parent_post["content"]
-                        target_author = parent_post["author"]
-                        conversation.insert(0, {
-                            **parent_post,
-                            "role": "original_claim"
-                        })
-                        
-                        # Still check for grandparent for additional context
-                        if hasattr(thread.thread.parent, 'parent'):
-                            grandparent_post = extract_post_data(thread.thread.parent.parent)
-                            if grandparent_post:
-                                conversation.insert(0, {
-                                    **grandparent_post,
-                                    "role": "discussion"
-                                })
+                    target_post = parent_post["content"]
+                    target_author = parent_post["author"]
+                    conversation.insert(0, {
+                        **parent_post,
+                        "role": "original_claim"
+                    })
             
             # If no parent, the current post itself might be the target
             if not target_post and current_post:
@@ -188,8 +200,8 @@ class Client:
             if target_author == bot_handle:
                 return None
             
-            # Determine request type and instruction
-            request_instruction = (mention_request or "").replace("@haqiqa.bsky.social", "").strip()
+            # Determine request type and instruction (keep @ symbols for context)
+            request_instruction = (mention_request or "").strip()
             request_type = "fact_check"
             if "?" in request_instruction:
                 request_type = "question"
