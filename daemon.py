@@ -37,9 +37,9 @@ class Oracle(bot):
                     hasattr(notif, 'uri') and notif.uri):
                     
                     # Check if timestamp is available for filtering
-                    if hasattr(notif, 'indexedAt') and notif.indexedAt:
+                    if hasattr(notif, 'indexed_at') and notif.indexed_at:
                         # Parse notification timestamp
-                        notif_timestamp = pd.to_datetime(notif.indexedAt, utc=True)
+                        notif_timestamp = pd.to_datetime(notif.indexed_at, utc=True)
                         
                         # Only process mentions newer than last processed timestamp
                         if notif_timestamp > self.last_processed_timestamp:
