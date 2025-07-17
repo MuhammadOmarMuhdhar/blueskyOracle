@@ -1,7 +1,10 @@
 import re
 import requests
+import logging
 from atproto import Client as AtprotoClient, models
 from typing import Optional, Dict, Any
+
+logger = logging.getLogger(__name__)
 
 
 class Client:
@@ -14,14 +17,14 @@ class Client:
             self.client.login(username, password)
             self.authenticated = True
         except Exception as e:
-            print(f"Login failed: {e}")
+            logger.error(f"Bluesky login failed: {e}")
             raise
     
     def url_to_uri(self, url: str) -> Optional[str]:
         """Convert Bluesky URL to AT URI"""
         match = re.match(r'https://bsky\.app/profile/([^/]+)/post/([^/?#]+)', url)
         if not match:
-            print("URL regex match failed")
+            logger.debug("URL regex match failed")
             return None
         
         handle, rkey = match.groups()
@@ -32,13 +35,13 @@ class Client:
                 params={"handle": handle}
             )
             if response.status_code != 200:
-                print(f"Handle resolution failed: {response.text}")
+                logger.debug(f"Handle resolution failed: {response.text}")
                 return None
             did = response.json()["did"]
             uri = f"at://{did}/app.bsky.feed.post/{rkey}"
             return uri
         except Exception as e:
-            print(f"Exception in url_to_uri: {e}")
+            logger.debug(f"URL to URI conversion failed: {e}")
             return None
     
     def get_post_text(self, url_or_uri: str) -> Optional[str]:
@@ -78,10 +81,10 @@ class Client:
                 post_author = response.posts[0].author.handle
                 bot_handle = self.client.me.handle if hasattr(self.client, 'me') else "haqiqa.bsky.social"
                 if post_author == bot_handle:
-                    print(f"Skipping bot's own post: {uri}")
+                    logger.debug(f"Skipping bot's own post")
                     return None
         except Exception as e:
-            print(f"Error checking post author: {e}")
+            logger.debug(f"Error checking post author: {e}")
             # Continue with normal processing if check fails
         
         try:
@@ -238,7 +241,7 @@ class Client:
             }
             
         except Exception as e:
-            print(f"Exception in get_thread_chain: {e}")
+            logger.debug(f"Thread chain retrieval failed: {e}")
             return None
     
     def get_notifications(self, limit: int = 50) -> list:
@@ -252,7 +255,7 @@ class Client:
             response = self.client.app.bsky.notification.list_notifications(params=params)
             return response.notifications
         except Exception as e:
-            print(f"Exception in get_notifications: {e}")
+            logger.debug(f"Notifications retrieval failed: {e}")
             return []
     
     def get_post_replies(self, post_url_or_uri: str, limit: int = 100) -> list:
@@ -291,24 +294,24 @@ class Client:
             return replies
             
         except Exception as e:
-            print(f"Exception in get_post_replies: {e}")
+            logger.debug(f"Post replies retrieval failed: {e}")
             return []
     
     def has_bot_already_replied(self, post_url_or_uri: str, bot_handle: str) -> bool:
         """Check if the bot has already replied to this post"""
         try:
             replies = self.get_post_replies(post_url_or_uri)
-            print(f"Found {len(replies)} replies")
+            logger.debug(f"Found {len(replies)} replies")
             
             # Check if any reply is from the bot
             for reply in replies:
                 if reply['author_handle'] == bot_handle:
-                    print(f"Found existing bot reply: {reply['uri']}")
+                    logger.debug(f"Found existing bot reply")
                     return True
             return False
             
         except Exception as e:
-            print(f"Exception in has_bot_already_replied: {e}")
+            logger.debug(f"Bot reply check failed: {e}")
             # Return False on error to avoid blocking legitimate posts
             return False
 
@@ -348,6 +351,6 @@ class Client:
             return True  # Fallback for compatibility
             
         except Exception as e:
-            print(f"Reply failed: {e}")
+            logger.error(f"Reply posting failed: {e}")
             return False
 

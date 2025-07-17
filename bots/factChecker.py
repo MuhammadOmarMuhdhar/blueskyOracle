@@ -60,16 +60,22 @@ class bot:
         """
         Fact-check a Bluesky post with URL validation and retry logic
         """
-        logger.info(f"Starting fact-check with URL validation (max {max_retries} attempts)")
+        logger.info(f"Starting fact-check (max {max_retries} attempts)")
         
         for attempt in range(max_retries):
-            logger.info(f"Fact-check attempt {attempt + 1}/{max_retries}")
+            logger.debug(f"Fact-check attempt {attempt + 1}/{max_retries}")
             
             try:
                 result = self._fact_check_attempt(post_url)
                 
                 if "error" in result:
                     logger.warning(f"Attempt {attempt + 1} failed with error: {result['error']}")
+                    continue
+                
+                # Check response length first (Bluesky limit is ~300 chars)
+                response_text = result.get('response', '')
+                if len(response_text) > 280:
+                    logger.warning(f"Attempt {attempt + 1}: Response too long ({len(response_text)} chars) - retrying for shorter response")
                     continue
                 
                 # Validate source URLs with smarter thresholds
@@ -84,20 +90,16 @@ class bot:
                 
                 # Accept if no sources (general statements) or ≥50% sources work
                 if total_sources == 0 or success_rate >= 50:
-                    if total_sources == 0:
-                        logger.info(f"Attempt {attempt + 1} successful - no specific sources to validate")
-                    else:
-                        logger.info(f"Attempt {attempt + 1} successful - {valid_count}/{total_sources} sources validated ({success_rate:.1f}%)")
+                    logger.info(f"Fact-check successful ({len(response_text)} chars, {valid_count}/{total_sources} sources valid)")
                     return result
                 
                 # Only retry if success rate is too low (<50%) and we have sources
-                logger.warning(f"Attempt {attempt + 1}: Only {valid_count}/{total_sources} sources valid ({success_rate:.1f}%) - below 50% threshold")
-                for url in invalid_urls:
-                    logger.warning(f"  Invalid URL: {url}")
+                logger.warning(f"Low source validation rate: {valid_count}/{total_sources} valid ({success_rate:.1f}%)")
+                logger.debug(f"Invalid URLs: {', '.join(invalid_urls)}")
                 
                 # If this is the last attempt, accept anyway to avoid inconclusive results
                 if attempt == max_retries - 1:
-                    logger.warning(f"Final attempt - accepting result despite low source validation rate")
+                    logger.warning(f"Final attempt - accepting despite low source validation")
                     return result
                     
                 # Wait a bit before retry
@@ -110,7 +112,7 @@ class bot:
                 time.sleep(2)
         
         # All attempts failed - return inconclusive response
-        logger.warning("All fact-check attempts failed - returning inconclusive response")
+        logger.error("All fact-check attempts failed")
         return self._create_inconclusive_response()
     
     def _fact_check_attempt(self, post_url: str) -> Dict[str, Any]:
@@ -173,10 +175,10 @@ class bot:
         try:
             # Try direct JSON parsing first
             parsed_json = json.loads(json_str_to_parse)
-            logger.info("Successfully parsed JSON directly.")
+            logger.debug("JSON parsed directly")
             return parsed_json
         except json.JSONDecodeError as e:
-            logger.warning(f"Direct JSON parsing failed: {e}")
+            logger.debug(f"Direct JSON parsing failed: {e}")
         
         # Enhanced extraction with cleanup
         try:
@@ -208,32 +210,20 @@ class bot:
             
             # Try parsing the extracted JSON
             parsed_json = json.loads(json_str_extracted)
-            logger.info("Successfully parsed JSON after cleanup and extraction.")
+            logger.debug("JSON parsed after cleanup")
             return parsed_json
             
         except (json.JSONDecodeError, ValueError) as e:
             # Final fallback - try to create a minimal valid response
-            logger.error(f"All JSON parsing attempts failed: {e}")
-            logger.error(f"Raw response (first 500 chars): {json_str_to_parse[:500]}")
+            logger.error(f"JSON parsing failed: {e}")
+            logger.debug(f"Raw response (first 200 chars): {json_str_to_parse[:200]}")
             
-            # Debug: Log the cleaned JSON as well
-            try:
-                cleaned_debug = self._clean_json_string(json_str_to_parse)
-                logger.error(f"Cleaned JSON (first 500 chars): {cleaned_debug[:500]}")
-                
-                # Try to find where exactly it fails
-                start_idx = cleaned_debug.find('{')
-                if start_idx != -1:
-                    logger.error(f"JSON starts at position {start_idx}")
-                    # Show a bit more context around the failure point
-                    if hasattr(e, 'pos'):
-                        error_pos = getattr(e, 'pos', 0)
-                        logger.error(f"Error at position {error_pos}")
-                        context_start = max(0, error_pos - 50)
-                        context_end = min(len(cleaned_debug), error_pos + 50)
-                        logger.error(f"Context around error: {cleaned_debug[context_start:context_end]}")
-            except Exception as debug_e:
-                logger.error(f"Debug logging failed: {debug_e}")
+            # Debug logging for troubleshooting
+            if hasattr(e, 'pos'):
+                error_pos = getattr(e, 'pos', 0)
+                logger.debug(f"Parse error at position {error_pos}")
+                context = json_str_to_parse[max(0, error_pos-30):error_pos+30]
+                logger.debug(f"Error context: ...{context}...")
             
             # Return a fallback response
             return {
@@ -397,11 +387,10 @@ class bot:
         try:
             # Basic URL format validation
             if not url.startswith(('http://', 'https://')):
-                logger.warning(f"Invalid URL format: {url}")
+                logger.debug(f"Invalid URL format: {url}")
                 return False
             
             # Make HEAD request to check if URL exists
-            logger.debug(f"Validating URL: {url}")
             response = requests.head(
                 url, 
                 timeout=10,
@@ -411,23 +400,20 @@ class bot:
             
             # Check for successful response codes
             if response.status_code in [200, 301, 302, 303]:
-                logger.debug(f"URL valid: {url} (status: {response.status_code})")
+                logger.debug(f"URL valid: {url}")
                 return True
             else:
                 logger.warning(f"URL returned error status {response.status_code}: {url}")
                 return False
                 
-        except requests.exceptions.Timeout:
-            logger.warning(f"URL timeout: {url}")
-            return False
-        except requests.exceptions.ConnectionError:
-            logger.warning(f"URL connection error: {url}")
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            logger.debug(f"URL unreachable: {url}")
             return False
         except requests.exceptions.RequestException as e:
-            logger.warning(f"URL request failed: {url} - {e}")
+            logger.debug(f"URL validation failed: {url} - {e}")
             return False
         except Exception as e:
-            logger.warning(f"URL validation error: {url} - {e}")
+            logger.debug(f"URL validation error: {url} - {e}")
             return False
     
     def _create_inconclusive_response(self) -> Dict[str, Any]:
@@ -511,10 +497,10 @@ class bot:
             table_id = os.getenv('BIGQUERY_TABLE_ID', 'responses')
             
             self.bq_client.append(df, dataset_id, table_id, create_if_not_exists=True)
-            logger.info(f"Successfully logged fact-check to BigQuery with ID: {fact_check_id}")
+            logger.debug(f"Logged fact-check to BigQuery: {fact_check_id}")
             
         except Exception as e:
-            logger.error(f"Failed to log to BigQuery: {e}")
+            logger.error(f"BigQuery logging failed: {e}")
         
         return fact_check_id
     
@@ -641,15 +627,15 @@ class bot:
             fact_check_id = result.get('fact_check_id')
             if fact_check_id:
                 self.post_to_factcheck_map[reply_result] = fact_check_id
-                logger.info(f"Stored mapping: {reply_result} -> {fact_check_id}")
+                logger.debug(f"Stored source mapping: {fact_check_id}")
             
-            logger.info(f"Successfully posted fact-check reply to {original_post_url}")
+            logger.info(f"Posted fact-check reply")
             return True
         elif reply_result == True:  # Old-style boolean return
-            logger.info(f"Successfully posted fact-check reply to {original_post_url}")
+            logger.info(f"Posted fact-check reply") 
             return True
         else:
-            logger.error(f"Failed to post reply to {original_post_url}")
+            logger.error(f"Failed to post reply")
             return False
     
     def get_sources_by_id(self, fact_check_id: str) -> list:
@@ -663,7 +649,7 @@ class bot:
             List of source dictionaries, empty list if not found or error
         """
         if not self.bq_client:
-            logger.warning("BigQuery not available for source retrieval")
+            logger.debug("BigQuery not available for source retrieval")
             return []
         
         try:
@@ -691,7 +677,7 @@ class bot:
                         try:
                             return json.loads(cleaned_json)
                         except json.JSONDecodeError:
-                            logger.warning(f"Could not parse sources JSON: {sources_json[:100]}")
+                            logger.debug(f"Could not parse sources JSON: {sources_json[:50]}")
                             return []
             
             return []

@@ -15,8 +15,6 @@ logger = logging.getLogger(__name__)
 class Oracle(bot):
     def __init__(self):
         super().__init__()
-        self.processed_mentions = set()
-        self.processing_timestamps = {}  # Track when mentions were processed
         self.bot_handle = self.bluesky_username
         self.last_processed_timestamp = None
         # Initialize timestamp-based duplicate prevention
@@ -25,7 +23,7 @@ class Oracle(bot):
     def get_recent_mentions(self):
         """Get recent mentions from notifications, filtered by timestamp"""
         try:
-            logger.info("Checking for new mentions...")
+            logger.debug("Checking for new mentions...")
             
             # Get notifications from Bluesky
             notifications = self.bluesky_client.get_notifications()
@@ -53,11 +51,11 @@ class Oracle(bot):
                     else:
                         # No timestamp available - process it (fail-safe)
                         mentions.append(notif.uri)
-                        logger.info(f"Processing mention without timestamp: {notif.uri}")
+                        logger.debug(f"Processing mention without timestamp: {notif.uri}")
             
             # Update our tracking timestamp if we found newer mentions
             if new_latest_timestamp > self.last_processed_timestamp:
-                logger.info(f"Found {len(mentions)} new mentions since {self.last_processed_timestamp}")
+                logger.info(f"Found {len(mentions)} new mentions")
                 self.last_processed_timestamp = new_latest_timestamp
                 self.update_timestamp_in_bigquery()
             
@@ -70,13 +68,7 @@ class Oracle(bot):
     def handle_mention(self, mention_uri):
         """Process a single mention"""
         try:
-            logger.info(f"Processing mention: {mention_uri}")
-            
-            # With timestamp-based filtering, mentions should already be new
-            # But keep a simple in-memory check for the current session
-            if mention_uri in self.processed_mentions:
-                logger.info(f"Skipping already processed mention in current session: {mention_uri}")
-                return
+            logger.debug(f"Processing mention: {mention_uri}")
             
             # Get the actual mention text to check if it's a sources request
             mention_text = self.bluesky_client.get_post_text(mention_uri)
@@ -89,99 +81,35 @@ class Oracle(bot):
             # Check if this is a sources request (keep @ symbols for context)
             clean_text = mention_text.strip()
             if "sources" in clean_text and len(clean_text) <= 15:
-                logger.info(f"Detected sources request: {mention_uri}")
+                logger.info(f"Processing sources request")
                 self.handle_sources_request(mention_uri)
             else:
                 # Regular fact-check request - check if we already replied to this mention
-                if self.robust_duplicate_check(mention_uri):
-                    logger.info(f"Duplicate detected for mention {mention_uri}, skipping")
+                if self.bluesky_client.has_bot_already_replied(mention_uri, self.bluesky_username):
+                    logger.debug(f"Already replied to this mention, skipping")
                     return
                 
                 # Proceed with fact-check
                 result = self.post_fact_check_reply(mention_uri)
                 
                 if result:
-                    logger.info(f"Successfully replied to {mention_uri}")
+                    logger.info(f"Successfully processed mention")
                 else:
-                    logger.warning(f"Failed to reply to {mention_uri}")
+                    logger.warning(f"Failed to process mention")
             
         except Exception as e:
             logger.error(f"Error handling mention {mention_uri}: {e}")
     
-    def robust_duplicate_check(self, mention_uri):
-        """Robust duplicate prevention with conservative bias and multiple fallbacks"""
-        import requests
-        import time
-        from datetime import datetime, timedelta
-        
-        try:
-            # Layer 1: Fast in-memory check
-            if mention_uri in self.processed_mentions:
-                logger.info(f"Duplicate found in memory: {mention_uri}")
-                return True
-            
-            # Layer 2: API check with retry and conservative error handling
-            for attempt in range(2):  # 2 attempts max
-                try:
-                    if self.bluesky_client.has_bot_already_replied(mention_uri, self.bluesky_username):
-                        logger.info(f"Duplicate found via API: {mention_uri}")
-                        return True
-                    # API succeeded and returned False - proceed to next layer
-                    logger.debug(f"API check passed (attempt {attempt + 1}): {mention_uri}")
-                    break
-                    
-                except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
-                    logger.warning(f"API error attempt {attempt + 1} for {mention_uri}: {e}")
-                    if attempt == 1:  # Last attempt
-                        logger.warning(f"API check failed - CONSERVATIVELY assuming duplicate: {mention_uri}")
-                        return True  # Conservative: assume already replied
-                    time.sleep(2)  # Brief wait before retry
-                    
-                except Exception as e:
-                    logger.error(f"Unexpected error in duplicate check for {mention_uri}: {e}")
-                    logger.warning(f"CONSERVATIVELY assuming duplicate due to error: {mention_uri}")
-                    return True  # Conservative: assume already replied
-            
-            # Layer 3: Recent processing cooldown (simple time-based protection)
-            if self.is_recently_processed(mention_uri, cooldown_minutes=5):
-                logger.info(f"Mention in cooldown period: {mention_uri}")
-                return True
-            
-            # All checks passed - mark as processed and proceed
-            self.processed_mentions.add(mention_uri)
-            self.processing_timestamps[mention_uri] = datetime.now()
-            logger.info(f"No duplicate found - proceeding with: {mention_uri}")
-            return False
-            
-        except Exception as e:
-            logger.error(f"Critical error in robust_duplicate_check for {mention_uri}: {e}")
-            # Ultimate fallback - assume duplicate to prevent processing
-            return True
     
-    def is_recently_processed(self, mention_uri, cooldown_minutes=5):
-        """Simple time-based cooldown check"""
-        try:
-            if mention_uri in self.processing_timestamps:
-                time_diff = (datetime.now() - self.processing_timestamps[mention_uri]).total_seconds() / 60
-                if time_diff < cooldown_minutes:
-                    logger.debug(f"Mention {mention_uri} processed {time_diff:.1f} minutes ago (within {cooldown_minutes}min cooldown)")
-                    return True
-                else:
-                    # Clean up old timestamp
-                    del self.processing_timestamps[mention_uri]
-            return False
-        except Exception as e:
-            logger.error(f"Error in cooldown check for {mention_uri}: {e}")
-            return False
     
     def handle_sources_request(self, mention_uri):
         """Handle a request for sources from a previous fact-check"""
         try:
-            logger.info(f"Processing sources request: {mention_uri}")
+            logger.debug(f"Processing sources request")
             
             # Check for duplicate sources request (prevent infinite loops)
-            if self.robust_duplicate_check(mention_uri):
-                logger.info(f"Duplicate sources request detected, skipping: {mention_uri}")
+            if self.bluesky_client.has_bot_already_replied(mention_uri, self.bluesky_username):
+                logger.debug(f"Duplicate sources request detected, skipping")
                 return
             
             # Find the bot's fact-check post in the thread context
@@ -197,12 +125,12 @@ class Oracle(bot):
             success = self.bluesky_client.post_reply(mention_uri, sources_response)
             
             if success:
-                logger.info(f"Successfully posted sources response to {mention_uri}")
+                logger.info(f"Posted sources response")
             else:
-                logger.warning(f"Failed to post sources response to {mention_uri}")
+                logger.warning(f"Failed to post sources response")
                 
         except Exception as e:
-            logger.error(f"Error handling sources request {mention_uri}: {e}")
+            logger.error(f"Error handling sources request: {e}")
     
     def find_fact_check_id_in_thread(self, mention_uri):
         """
@@ -219,32 +147,31 @@ class Oracle(bot):
                 parent_author = parent_info.get("author", "")
                 bot_identifiers = [f"@{self.bluesky_username}", self.bluesky_username, f"@haqiqa.bsky.social", "haqiqa.bsky.social"]
                 if parent_author in bot_identifiers:
-                    logger.info("Sources request is replying directly to bot post - searching for fact-check ID")
+                    logger.debug("Sources request replying to bot post")
                     parent_uri = thread_data.get("replying_to", {}).get("uri")
                     if parent_uri and parent_uri in self.post_to_factcheck_map:
                         fact_check_id = self.post_to_factcheck_map[parent_uri]
-                        logger.info(f"Found fact-check ID from direct reply mapping: {fact_check_id}")
+                        logger.debug(f"Found fact-check ID from mapping: {fact_check_id}")
                         return fact_check_id
                     else:
-                        logger.warning(f"Bot post found but no fact-check ID in mapping for URI: {parent_uri}")
+                        logger.debug(f"No mapping found, trying BigQuery fallback")
                         
                         # Fallback: Try to find fact-check ID from BigQuery using parent post content
                         if parent_uri:
                             bot_post_text = self.bluesky_client.get_post_text(parent_uri)
                             if bot_post_text:
-                                logger.info(f"Bot post text: {bot_post_text[:100]}...")
+                                logger.debug(f"Searching BigQuery for matching response")
                                 fact_check_id = self._find_fact_check_id_by_response_text(bot_post_text)
                                 if fact_check_id:
-                                    logger.info(f"Found fact-check ID from BigQuery fallback: {fact_check_id}")
+                                    logger.debug(f"Found fact-check ID from BigQuery: {fact_check_id}")
                                     return fact_check_id
             
             # Method 2: DISABLED - was causing cross-contamination
             # The old method was too broad and matched posts from same author regardless of thread
-            logger.info("Skipping broad post mapping check to prevent cross-contamination")
+            logger.debug("Skipping broad post mapping check to prevent cross-contamination")
             
             # Method 3: Conservative fallback - ONLY if we can't find direct relationship
-            logger.warning("No direct thread relationship found - sources request may be invalid")
-            logger.info("Consider asking user to reply directly to the bot's fact-check post")
+            logger.debug("No direct thread relationship found")
             return None  # Don't use BigQuery fallback to avoid wrong associations
             
         except Exception as e:
@@ -257,7 +184,7 @@ class Oracle(bot):
         """
         try:
             if not self.bq_client:
-                logger.warning("BigQuery not available for fact-check ID lookup")
+                logger.debug("BigQuery not available for fact-check ID lookup")
                 return None
             
             dataset_id = os.getenv('BIGQUERY_DATASET_ID', 'fact_checks')
@@ -296,10 +223,10 @@ class Oracle(bot):
                             
                             if similarity > 0.7:
                                 fact_check_id = row.get('id')
-                                logger.info(f"Found matching fact-check ID: {fact_check_id} (similarity: {similarity:.2f})")
+                                logger.debug(f"Found matching fact-check ID: {fact_check_id} (similarity: {similarity:.2f})")
                                 return fact_check_id
             
-            logger.warning("No matching fact-check found in BigQuery")
+            logger.debug("No matching fact-check found in BigQuery")
             return None
             
         except Exception as e:
@@ -431,16 +358,13 @@ class Oracle(bot):
                 # Get new mentions
                 mentions = self.get_recent_mentions()
                 
-                # Process new mentions (already filtered by timestamp)
-                new_mentions = [m for m in mentions if m not in self.processed_mentions]
+                # Process mentions (already filtered by timestamp)
+                # No need for additional filtering since timestamp-based filtering already handles duplicates
                 
-                if new_mentions:
-                    logger.info(f"Found {len(new_mentions)} new mentions")
-                    for mention in new_mentions:
+                if mentions:
+                    for mention in mentions:
                         self.handle_mention(mention)
                         time.sleep(2)  # Small delay between responses
-                else:
-                    logger.info("No new mentions found")
                 
                 # Wait before next check
                 time.sleep(check_interval)

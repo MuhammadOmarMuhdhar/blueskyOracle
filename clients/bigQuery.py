@@ -23,7 +23,7 @@ class Client:
         Initialize the BigQuery API with memory management
         """
         self.logger = logging.getLogger(self.__class__.__name__)
-        self.logger.info("Initializing BigQuery API")
+        self.logger.debug("Initializing BigQuery API")
         
         self.credentials_json = credentials_json
         self.project_id = project_id
@@ -33,11 +33,11 @@ class Client:
         # Track active jobs for cleanup - USE WEAKREFS TO PREVENT REFERENCE CYCLES
         self._active_jobs = weakref.WeakSet()
         
-        self.logger.info(f"BigQuery API initialized with batch size: {self.batch_size}")
+        self.logger.debug(f"BigQuery API initialized with batch size: {self.batch_size}")
     
     def _build_client(self):
         """Build and return the BigQuery client"""
-        self.logger.info("Building BigQuery client")
+        self.logger.debug("Building BigQuery client")
         
         credentials = service_account.Credentials.from_service_account_info(
             self.credentials_json,
@@ -45,7 +45,7 @@ class Client:
         )
         
         client = bigquery.Client(project=self.project_id, credentials=credentials)
-        self.logger.info("BigQuery client built successfully")
+        self.logger.debug("BigQuery client built successfully")
         return client
     
     @contextmanager
@@ -136,7 +136,7 @@ class Client:
 
     def _refresh_client(self):
         """Rebuild the BigQuery client with fresh credentials"""
-        self.logger.info("Refreshing BigQuery client connection")
+        self.logger.debug("Refreshing BigQuery client connection")
         
         # CLEANUP OLD CLIENT
         try:
