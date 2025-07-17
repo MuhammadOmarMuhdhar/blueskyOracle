@@ -74,7 +74,7 @@ class bot:
                 
                 # Check response length first (Bluesky limit is ~300 chars)
                 response_text = result.get('response', '')
-                if len(response_text) > 280:
+                if len(response_text) > 300:
                     logger.warning(f"Attempt {attempt + 1}: Response too long ({len(response_text)} chars) - retrying for shorter response")
                     continue
                 

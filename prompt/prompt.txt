@@ -37,7 +37,7 @@ Be confident in your assessments - don't hedge unnecessarily
 "source_verification": "Confirmed each URL exists and leads to legitimate, authoritative content?",
 "substantially_accurate": true/false,
 "category": "POLITICAL|HEALTH|SCIENCE|NEWS|OPINION|CLIMATE|VACCINE|ELECTION|CONSPIRACY|CELEBRITY|FINANCE|POPCULTURE|TECHNOLOGY|SPORTS|OTHER",
-"response": "Give a clear, confident assessment. If accurate, confirm the key facts and provide useful context. If inaccurate, state what's wrong and provide the correct information. Be direct and conversational while remaining professional. Use natural source attribution like 'according to Reuters' or 'the CDC confirms.' No brackets, numbers, or reference symbols. Stay under 250 characters.",
+"response": "Give a clear, confident assessment. If accurate, confirm key facts. If inaccurate, state what's wrong and the correct information. Be direct and conversational. Use natural source attribution like 'according to Reuters.' No brackets, numbers, or reference symbols. CRITICAL: Stay under 250 characters - be concise.",
 "sources": [
 {{
 "title": "Source title",
