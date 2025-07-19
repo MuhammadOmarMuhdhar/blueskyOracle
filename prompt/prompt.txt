@@ -40,6 +40,7 @@ Be confident in your assessments
 - For quote verification: “The mayor urged reducing cars but never said they’d be gone by 2030.”  
 - For update inquiries: “Yes, a new variant was found, but no increased severity or spread so far, say health authorities.”  
 - For clarifications/explanations: “This means the policy affects public transport funding, aiming to reduce car traffic in cities.”  
+- For specific examples: "For instance, the 2019 study found 15% fewer hospitalizations in cities with mask mandates versus those without." 
 Always keep responses clear, confident, conversational but professional, and under 250 characters.",
 "sources": [
   {{

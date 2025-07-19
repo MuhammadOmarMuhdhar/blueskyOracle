@@ -64,7 +64,7 @@ class Client:
             return None
     
     def get_thread_chain(self, url_or_uri: str) -> Optional[Dict[str, Any]]:
-        """Get thread context and target post info as structured dictionary"""
+        """Get simplified thread context: original post + 2 most recent comments"""
         if url_or_uri.startswith("https://"):
             uri = self.url_to_uri(url_or_uri)
             if not uri:
@@ -96,7 +96,6 @@ class Client:
             )
             thread = self.client.app.bsky.feed.get_post_thread(params=params)
             
-            conversation = []
             target_post = None
             target_author = None
             mention_request = None
@@ -117,81 +116,34 @@ class Client:
             if current_post:
                 mention_request = current_post["content"]
                 mention_author = current_post["author"]
-                conversation.append({
-                    **current_post,
-                    "role": "fact_check_request"
-                })
             
-            # Traverse the thread to find the root post and build conversation context
-            def traverse_thread_to_root(current_thread):
-                """Traverse thread backwards to find root post and build full context"""
-                thread_chain = []
-                current = current_thread
-                bot_handle = f"@{self.client.me.handle}" if hasattr(self.client, 'me') else "@haqiqa.bsky.social"
-                
-                # Traverse backwards through the thread
-                while current and hasattr(current, 'parent'):
-                    parent_post = extract_post_data(current.parent)
-                    if parent_post:
-                        thread_chain.insert(0, parent_post)  # Insert at beginning to maintain order
-                    current = current.parent
-                
-                # Now analyze the chain to find the original claim and context
-                root_post = None
-                bot_replies = []
-                other_posts = []
-                
-                for post in thread_chain:
-                    if post["author"] == bot_handle:
-                        bot_replies.append(post)
-                    else:
-                        other_posts.append(post)
-                
-                # The root post is the first non-bot post in the chain
-                if other_posts:
-                    root_post = other_posts[0]
-                
-                return root_post, bot_replies, other_posts
+            # Find the original post (root)
+            original_post = None
+            all_posts = []
             
-            # Get thread context
-            root_post, bot_replies, other_posts = traverse_thread_to_root(thread.thread)
+            # Traverse backwards to find root and collect all posts
+            current = thread.thread
+            while current and hasattr(current, 'parent'):
+                parent_post = extract_post_data(current.parent)
+                if parent_post:
+                    all_posts.insert(0, parent_post)
+                current = current.parent
             
-            # Set target post - prefer root post if available
-            if root_post:
-                target_post = root_post["content"]
-                target_author = root_post["author"]
-                conversation.insert(0, {
-                    **root_post,
-                    "role": "original_claim"
-                })
-                
-                # Add other context posts
-                for i, post in enumerate(other_posts[1:], 1):  # Skip root post
-                    conversation.insert(i, {
-                        **post,
-                        "role": "discussion"
-                    })
-                
-                # Add bot replies for context
-                for bot_reply in bot_replies:
-                    conversation.append({
-                        **bot_reply,
-                        "role": "bot_previous_reply"
-                    })
+            # Original post is the first post in the chain
+            if all_posts:
+                original_post = all_posts[0]
+                target_post = original_post["content"]
+                target_author = original_post["author"]
             
-            # Fallback: if no root post found, use direct parent
+            # If no thread found, use direct parent or current post
             elif hasattr(thread.thread, 'parent'):
                 parent_post = extract_post_data(thread.thread.parent)
                 if parent_post:
+                    original_post = parent_post
                     target_post = parent_post["content"]
                     target_author = parent_post["author"]
-                    conversation.insert(0, {
-                        **parent_post,
-                        "role": "original_claim"
-                    })
-            
-            # If no parent, the current post itself might be the target
-            if not target_post and current_post:
+            elif current_post:
+                original_post = current_post
                 target_post = current_post["content"]
                 target_author = current_post["author"]
             
@@ -203,7 +155,28 @@ class Client:
             if target_author == bot_handle:
                 return None
             
-            # Determine request type and instruction (keep @ symbols for context)
+            # Get the 2 most recent comments (excluding bot posts and the mention request)
+            recent_comments = []
+            bot_handle_clean = bot_handle.replace("@", "")
+            
+            # Filter out bot posts and get recent non-bot comments
+            non_bot_posts = [p for p in all_posts[1:] if not p["author"].replace("@", "") == bot_handle_clean]
+            
+            # Take the 2 most recent comments (they're in chronological order)
+            if len(non_bot_posts) > 0:
+                recent_comments = non_bot_posts[-2:]  # Last 2 comments
+            
+            # Build simplified conversation summary
+            conversation_parts = []
+            if original_post:
+                conversation_parts.append(f"Original: {original_post['author']}: {original_post['content']}")
+            
+            for comment in recent_comments:
+                conversation_parts.append(f"Recent: {comment['author']}: {comment['content']}")
+            
+            thread_summary = "\n".join(conversation_parts) if conversation_parts else "No conversation context"
+            
+            # Determine request type and instruction
             request_instruction = (mention_request or "").strip()
             request_type = "fact_check"
             if "?" in request_instruction:
@@ -228,11 +201,11 @@ class Client:
                     "post_type": target_post_type
                 },
                 "context": {
-                    "conversation": conversation,
-                    "thread_summary": f"Discussion thread with {len(conversation)} posts"
+                    "conversation": [],  # No longer used but kept for compatibility
+                    "thread_summary": thread_summary
                 },
                 # Keep legacy format for backward compatibility
-                "thread_context": "\n\n".join([f"{p['author']}: {p['content']}" for p in conversation]),
+                "thread_context": thread_summary,
                 "replying_to": {
                     "text": target_post,
                     "author": target_author,
