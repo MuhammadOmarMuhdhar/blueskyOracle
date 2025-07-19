@@ -6,16 +6,12 @@ class Client:
     def __init__(self, api_key, model_name="gemini-2.5-flash"):
         self.api_key = api_key
         self.model_name = model_name
-        self.cache = {}
         self.client = genai.Client(api_key=self.api_key)
         self.search_tool = types.Tool(
             google_search=types.GoogleSearch()
         )
 
     def generate(self, prompt, delay=6):
-        if prompt in self.cache:
-            return self.cache[prompt]
-
         time.sleep(delay)  # Rate limit management
 
         config = types.GenerateContentConfig(
@@ -43,5 +39,4 @@ class Client:
                 result = f"No content in candidate. Candidate: {candidate}"
         else:
             result = f"No candidates. Output: {output}"
-        self.cache[prompt] = result
         return result
