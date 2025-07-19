@@ -236,6 +236,9 @@ class bot:
         # Query Gemini for fact-check
         response = self.gemini_client.generate(prompt)
         
+        # Log raw response for debugging
+        logger.info(f"Response length: {len(response)} characters")
+        
         # Parse JSON response
         try:
             parsed_result = self._parse_json_response(response, "gemini", {})
@@ -299,34 +302,33 @@ class bot:
             return parsed_json
             
         except (json.JSONDecodeError, ValueError) as e:
-            # Final fallback - try to create a minimal valid response
             logger.error(f"JSON parsing failed: {e}")
-            logger.debug(f"Raw response (first 200 chars): {json_str_to_parse[:200]}")
+            logger.debug(f"Raw response (first 500 chars): {json_str_to_parse[:500]}")
             
             # Debug logging for troubleshooting
             if hasattr(e, 'pos'):
                 error_pos = getattr(e, 'pos', 0)
                 logger.debug(f"Parse error at position {error_pos}")
-                context = json_str_to_parse[max(0, error_pos-30):error_pos+30]
+                context = json_str_to_parse[max(0, error_pos-50):error_pos+50]
                 logger.debug(f"Error context: ...{context}...")
             
-            # Return a fallback response
+            # Try manual parsing for common patterns
+            try:
+                manual_result = self._manual_json_extraction(json_str_to_parse)
+                if manual_result:
+                    logger.info("Successfully extracted JSON manually")
+                    return manual_result
+            except Exception as manual_e:
+                logger.debug(f"Manual extraction also failed: {manual_e}")
+            
+            # Final fallback - try to create a minimal valid response
             return {
                 "thinking": "JSON parsing failed - using fallback response",
-                "status": "UNVERIFIABLE", 
+                "substantially_accurate": False,
                 "category": "OTHER",
+                "response_character_count": 50,
                 "response": "Error processing fact-check response. Please try again.",
-                "sources": [],
-                "content_analysis": {
-                    "emotional_tone": "NEUTRAL",
-                    "contains_statistics": False,
-                    "contains_quotes": False,
-                    "contains_dates": False,
-                    "uses_absolutes": False,
-                    "creates_urgency": False,
-                    "appeals_to_authority": False,
-                    "personal_anecdote": False
-                }
+                "sources": []
             }
     
     def _clean_json_string(self, json_str: str) -> str:
@@ -343,6 +345,28 @@ class bot:
             cleaned = cleaned[3:]
         if cleaned.endswith('```'):
             cleaned = cleaned[:-3]
+        
+        # Fix common JSON formatting issues
+        cleaned = cleaned.strip()
+        
+        # Fix missing commas before closing braces/brackets
+        cleaned = re.sub(r'"\s*\n\s*}', '"\n}', cleaned)
+        cleaned = re.sub(r'"\s*\n\s*]', '"\n]', cleaned)
+        
+        # Fix trailing commas
+        cleaned = re.sub(r',(\s*[}\]])', r'\1', cleaned)
+        
+        # Fix missing quotes around keys
+        cleaned = re.sub(r'(\w+):', r'"\1":', cleaned)
+        
+        # Fix single quotes to double quotes
+        cleaned = re.sub(r"'([^']*)'", r'"\1"', cleaned)
+        
+        # Fix escaped characters that break JSON
+        cleaned = cleaned.replace('\\"', '"').replace("\\'", "'")
+        
+        # Remove any non-printable characters
+        cleaned = ''.join(char for char in cleaned if ord(char) >= 32 or char in '\n\r\t')
         
         # Remove common text before JSON
         prefixes_to_remove = [
@@ -818,5 +842,70 @@ class bot:
             # Final truncation if still too long
             if len(full_response) > 280:
                 full_response = full_response[:277] + "..."
+    
+    def _manual_json_extraction(self, response_text: str) -> dict:
+        """Manual extraction for common JSON patterns when parsing fails"""
+        import re
         
-        return full_response
+        # Try to extract key fields manually
+        result = {}
+        
+        # Extract thinking field
+        thinking_match = re.search(r'"thinking":\s*"([^"]+)"', response_text, re.DOTALL)
+        if thinking_match:
+            result["thinking"] = thinking_match.group(1)
+        
+        # Extract substantially_accurate
+        accurate_match = re.search(r'"substantially_accurate":\s*(true|false)', response_text)
+        if accurate_match:
+            result["substantially_accurate"] = accurate_match.group(1) == "true"
+        
+        # Extract category
+        category_match = re.search(r'"category":\s*"([^"]+)"', response_text)
+        if category_match:
+            result["category"] = category_match.group(1)
+        
+        # Extract response
+        response_match = re.search(r'"response":\s*"([^"]+)"', response_text, re.DOTALL)
+        if response_match:
+            result["response"] = response_match.group(1)
+            result["response_character_count"] = len(result["response"])
+        
+        # Extract sources array (simplified)
+        sources_match = re.search(r'"sources":\s*\[([^\]]+)\]', response_text, re.DOTALL)
+        if sources_match:
+            try:
+                # Try to parse individual source objects
+                sources_content = sources_match.group(1)
+                sources = []
+                
+                # Find individual source objects
+                source_objects = re.findall(r'\{([^}]+)\}', sources_content)
+                for source_obj in source_objects:
+                    source = {}
+                    title_match = re.search(r'"title":\s*"([^"]+)"', source_obj)
+                    if title_match:
+                        source["title"] = title_match.group(1)
+                    
+                    publisher_match = re.search(r'"publisher":\s*"([^"]+)"', source_obj)
+                    if publisher_match:
+                        source["publisher"] = publisher_match.group(1)
+                    
+                    relevance_match = re.search(r'"relevance":\s*"([^"]+)"', source_obj)
+                    if relevance_match:
+                        source["relevance"] = relevance_match.group(1)
+                    
+                    if source:
+                        sources.append(source)
+                
+                result["sources"] = sources
+            except:
+                result["sources"] = []
+        else:
+            result["sources"] = []
+        
+        # Only return if we extracted at least the essential fields
+        if "response" in result and "substantially_accurate" in result:
+            return result
+        
+        return None
