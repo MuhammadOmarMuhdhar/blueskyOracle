@@ -1,7 +1,7 @@
 # Data Policy
 
 ## Overview
-This document outlines the data collection, storage, and privacy practices for the Bluesky Oracle fact-checking bot. Our bot is designed for misinformation research and fact-checking while prioritizing user privacy through comprehensive anonymization.
+This document outlines the data collection, storage, and privacy practices for the Bluesky Oracle fact-checking bot.
 
 ## Data Collection
 
@@ -78,7 +78,6 @@ The bot collects **anonymized analytics data** for misinformation research purpo
 
 ### Data Deletion
 - Individual users cannot request deletion (no personal data stored)
-- Complete dataset deletion available upon project termination
 - Regular data reviews for compliance and necessity
 
 ## User Rights and Control
@@ -102,12 +101,11 @@ The bot collects **anonymized analytics data** for misinformation research purpo
 
 ### Contact
 For questions about this data policy or research collaboration:
-- Repository: [Your GitHub Repository]
-- Issues: [GitHub Issues Link]
+- muhammad_muhdhar@berkeley.edu
 
 ## Policy Updates
 
-This policy may be updated to reflect changes in data practices, legal requirements, or research needs. Users will be notified of significant changes through repository updates.
+This policy may be updated to reflect changes in data practices, legal requirements, or research needs.
 
 **Last Updated**: July 2025
 **Version**: 1.0

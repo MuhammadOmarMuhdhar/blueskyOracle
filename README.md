@@ -18,12 +18,12 @@ bskyOracle/
 ├── bots/
 │   └── factChecker.py  # Main fact-checking bot logic
 ├── prompt/
-│   └── prompt.txt      # Enhanced fact-checking prompt with content analysis
+│   └── prompt.txt      # Fact-checking prompt with content analysis
 ├── daemon.py           # Live monitoring service (Oracle class)
 ├── render.yaml         # Render deployment configuration
 ├── Procfile           # Process definition for deployment
 ├── requirements.txt   # Python dependencies
-├── DATA_POLICY.md     # Data collection and privacy policy
+├── DATAPOLICY.md     # Data collection and privacy policy
 └── .env              # Environment variables (API keys, BigQuery config)
 ```
 

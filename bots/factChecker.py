@@ -802,7 +802,7 @@ class bot:
         full_response = "\n\n".join(response_parts)
         
         # Truncate if too long for Bluesky (300 char limit)
-        if len(full_response) > 280:
+        if len(full_response) > 300:
             # Try shorter format
             response_parts = ["Sources:"]
             for i, source in enumerate(sources[:3], 1):
