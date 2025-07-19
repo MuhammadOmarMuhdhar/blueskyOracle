@@ -58,31 +58,67 @@ class bot:
         
     def fact_check_post(self, post_url: str, max_retries: int = 3) -> Dict[str, Any]:
         """
-        Fact-check a Bluesky post with URL validation and retry logic
+        Fact-check a Bluesky post with enhanced error-specific retry logic
         """
         logger.info(f"Starting fact-check (max {max_retries} attempts)")
+        
+        # Error tracking for BigQuery logging
+        error_log = {
+            'post_retrieval_attempts': 0,
+            'response_length_attempts': 0, 
+            'source_validation_attempts': 0,
+            'json_parse_attempts': 0,
+            'network_error_attempts': 0,
+            'final_error_type': None
+        }
+        
+        # Enhanced retry configs for different error types
+        retry_configs = {
+            'post_retrieval': {'max_retries': 5, 'backoff_seconds': [1, 2, 4, 8, 16]},
+            'response_length': {'max_retries': 3, 'backoff_seconds': [2, 2, 2]},
+            'source_validation': {'max_retries': 2, 'backoff_seconds': [3, 5]},
+            'json_parsing': {'max_retries': 2, 'backoff_seconds': [1, 2]},
+            'network_error': {'max_retries': 3, 'backoff_seconds': [5, 10, 15]}
+        }
         
         for attempt in range(max_retries):
             logger.debug(f"Fact-check attempt {attempt + 1}/{max_retries}")
             
             try:
-                result = self._fact_check_attempt(post_url)
+                result = self._fact_check_attempt_with_retry(post_url, retry_configs, error_log)
                 
                 if "error" in result:
-                    logger.warning(f"Attempt {attempt + 1} failed with error: {result['error']}")
-                    continue
+                    error_type = self._classify_error(result['error'])
+                    error_log['final_error_type'] = error_type
+                    
+                    if error_type == 'post_retrieval' and error_log['post_retrieval_attempts'] < retry_configs['post_retrieval']['max_retries']:
+                        error_log['post_retrieval_attempts'] += 1
+                        time.sleep(retry_configs['post_retrieval']['backoff_seconds'][min(error_log['post_retrieval_attempts']-1, 4)])
+                        logger.warning(f"Post retrieval attempt {error_log['post_retrieval_attempts']}: {result['error']}")
+                        continue
+                    elif error_type == 'json_parsing' and error_log['json_parse_attempts'] < retry_configs['json_parsing']['max_retries']:
+                        error_log['json_parse_attempts'] += 1
+                        time.sleep(retry_configs['json_parsing']['backoff_seconds'][min(error_log['json_parse_attempts']-1, 1)])
+                        logger.warning(f"JSON parsing attempt {error_log['json_parse_attempts']}: {result['error']}")
+                        continue
+                    else:
+                        logger.warning(f"Attempt {attempt + 1} failed with error: {result['error']}")
+                        continue
                 
-                # Check response length first (Bluesky limit is ~300 chars)
+                # Check response length with separate retry logic
                 response_text = result.get('response', '')
                 if len(response_text) > 300:
-                    logger.warning(f"Attempt {attempt + 1}: Response too long ({len(response_text)} chars) - retrying for shorter response")
-                    continue
+                    if error_log['response_length_attempts'] < retry_configs['response_length']['max_retries']:
+                        error_log['response_length_attempts'] += 1
+                        error_log['final_error_type'] = 'response_length'
+                        time.sleep(retry_configs['response_length']['backoff_seconds'][min(error_log['response_length_attempts']-1, 2)])
+                        logger.warning(f"Response length attempt {error_log['response_length_attempts']}: {len(response_text)} chars")
+                        continue
                 
-                # Validate source URLs with smarter thresholds
+                # Validate source URLs with separate retry logic
                 sources = result.get('sources', [])
                 invalid_urls = self._validate_source_urls(sources)
                 
-                # Calculate success rate
                 total_sources = len(sources)
                 invalid_count = len(invalid_urls)
                 valid_count = total_sources - invalid_count
@@ -91,29 +127,78 @@ class bot:
                 # Accept if no sources (general statements) or ≥50% sources work
                 if total_sources == 0 or success_rate >= 50:
                     logger.info(f"Fact-check successful ({len(response_text)} chars, {valid_count}/{total_sources} sources valid)")
+                    # Add error metadata to status if there were retries
+                    if any(error_log[k] > 0 for k in error_log if k != 'final_error_type'):
+                        result['status_with_errors'] = {
+                            'original_status': result.get('status'),
+                            'error_metadata': error_log
+                        }
                     return result
                 
-                # Only retry if success rate is too low (<50%) and we have sources
-                logger.warning(f"Low source validation rate: {valid_count}/{total_sources} valid ({success_rate:.1f}%)")
-                logger.debug(f"Invalid URLs: {', '.join(invalid_urls)}")
+                # Source validation retry logic
+                if error_log['source_validation_attempts'] < retry_configs['source_validation']['max_retries']:
+                    error_log['source_validation_attempts'] += 1
+                    error_log['final_error_type'] = 'source_validation'
+                    time.sleep(retry_configs['source_validation']['backoff_seconds'][min(error_log['source_validation_attempts']-1, 1)])
+                    logger.warning(f"Source validation attempt {error_log['source_validation_attempts']}: {success_rate:.1f}% valid")
+                    continue
                 
                 # If this is the last attempt, accept anyway to avoid inconclusive results
                 if attempt == max_retries - 1:
-                    logger.warning(f"Final attempt - accepting despite low source validation")
+                    logger.warning(f"Final attempt - accepting despite issues")
+                    result['status_with_errors'] = {
+                        'original_status': result.get('status'),
+                        'error_metadata': error_log
+                    }
                     return result
                     
-                # Wait a bit before retry
-                time.sleep(2)
-                
             except Exception as e:
+                error_type = self._classify_error(str(e))
+                error_log['final_error_type'] = error_type
+                
+                if error_type == 'network_error' and error_log['network_error_attempts'] < retry_configs['network_error']['max_retries']:
+                    error_log['network_error_attempts'] += 1
+                    backoff_time = retry_configs['network_error']['backoff_seconds'][min(error_log['network_error_attempts']-1, 2)]
+                    time.sleep(backoff_time)
+                    logger.error(f"Network error attempt {error_log['network_error_attempts']}: {e}")
+                    continue
+                
                 logger.error(f"Attempt {attempt + 1} failed with exception: {e}")
                 if attempt == max_retries - 1:
                     break
                 time.sleep(2)
         
-        # All attempts failed - return inconclusive response
+        # All attempts failed - return inconclusive response with error metadata
         logger.error("All fact-check attempts failed")
-        return self._create_inconclusive_response()
+        inconclusive = self._create_inconclusive_response()
+        inconclusive['status_with_errors'] = {
+            'original_status': inconclusive.get('status'),
+            'error_metadata': error_log
+        }
+        return inconclusive
+    
+    def _fact_check_attempt_with_retry(self, post_url: str, retry_configs: dict, error_log: dict) -> Dict[str, Any]:
+        """
+        Enhanced fact-check attempt with error-specific handling
+        """
+        return self._fact_check_attempt(post_url)
+    
+    def _classify_error(self, error_message: str) -> str:
+        """
+        Classify error type for appropriate retry strategy
+        """
+        error_lower = error_message.lower()
+        
+        if 'could not retrieve post data' in error_lower or 'thread' in error_lower:
+            return 'post_retrieval'
+        elif 'json' in error_lower or 'parse' in error_lower or 'decode' in error_lower:
+            return 'json_parsing'
+        elif 'network' in error_lower or 'connection' in error_lower or 'timeout' in error_lower:
+            return 'network_error'
+        elif 'rate limit' in error_lower or 'too many requests' in error_lower:
+            return 'rate_limit'
+        else:
+            return 'unknown'
     
     def _fact_check_attempt(self, post_url: str) -> Dict[str, Any]:
         """
@@ -455,11 +540,17 @@ class bot:
             
             # Use the fact-check ID generated at method start
             
+            # Handle status field with error metadata
+            status_value = result.get('status', '')
+            if 'status_with_errors' in result:
+                # Store error metadata in status field as JSON
+                status_value = json.dumps(result['status_with_errors'])
+            
             record = {
                 'id': fact_check_id,
                 'timestamp': now,
                 'thinking': result.get('thinking', ''),
-                'status': result.get('status', ''),
+                'status': status_value,
                 'category': result.get('category', ''),
                 'response': result.get('response', ''),
                 'response_length': len(result.get('response', '')),
