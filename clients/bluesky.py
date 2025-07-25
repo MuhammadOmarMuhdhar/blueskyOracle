@@ -2,13 +2,13 @@ import re
 import requests
 import logging
 from atproto import Client as AtprotoClient, models
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 logger = logging.getLogger(__name__)
 
 
 class Client:
-    """Simple Bluesky client with just the essentials"""
+    """Bluesky client for media processing (images, audio, video)"""
     
     def __init__(self, username: str, password: str):
         self.client = AtprotoClient()
@@ -63,158 +63,88 @@ class Client:
         except Exception as e:
             return None
     
-    def get_thread_chain(self, url_or_uri: str) -> Optional[Dict[str, Any]]:
-        """Get simplified thread context: original post + 2 most recent comments"""
+    def get_parent_post_with_media(self, url_or_uri: str) -> Optional[Dict[str, Any]]:
+        """Get the parent post (one reply up) with media attachments"""
+        # Convert URL to URI if needed
         if url_or_uri.startswith("https://"):
-            uri = self.url_to_uri(url_or_uri)
-            if not uri:
+            mention_uri = self.url_to_uri(url_or_uri)
+            if not mention_uri:
                 return None
         else:
-            uri = url_or_uri
-        
-        # Early check: Don't process the bot's own posts
+            mention_uri = url_or_uri
+            
         try:
             from atproto import models
-            params = models.AppBskyFeedGetPosts.Params(uris=[uri])
-            response = self.client.app.bsky.feed.get_posts(params=params)
-            if response.posts:
-                post_author = response.posts[0].author.handle
-                bot_handle = self.client.me.handle if hasattr(self.client, 'me') else "haqiqa.bsky.social"
-                if post_author == bot_handle:
-                    logger.debug(f"Skipping bot's own post")
-                    return None
-        except Exception as e:
-            logger.debug(f"Error checking post author: {e}")
-            # Continue with normal processing if check fails
-        
-        try:
-            from atproto import models
+            
+            # Get the thread to find parent
             params = models.AppBskyFeedGetPostThread.Params(
-                uri=uri, 
-                depth=6,        # Get replies
-                parentHeight=10 # Get parent context
+                uri=mention_uri,
+                depth=0,  # No replies needed
+                parentHeight=1  # Just one parent up
             )
             thread = self.client.app.bsky.feed.get_post_thread(params=params)
             
-            target_post = None
-            target_author = None
-            mention_request = None
-            mention_author = None
-            
-            # Helper to extract post data
-            def extract_post_data(view):
-                if hasattr(view, 'post') and hasattr(view.post, 'record'):
+            # Get parent post if it exists
+            if hasattr(thread.thread, 'parent') and thread.thread.parent:
+                parent = thread.thread.parent
+                if hasattr(parent, 'post'):
+                    post = parent.post
+                    
+                    # Skip bot's own posts
+                    bot_handle = self.client.me.handle if hasattr(self.client, 'me') else "bskyscribe.bsky.social"
+                    if post.author.handle == bot_handle:
+                        logger.debug("Skipping bot's own post")
+                        return None
+                    
+                    # Extract media attachments
+                    media_items = []
+                    if hasattr(post.record, 'embed') and post.record.embed:
+                        media_items = self._extract_media_from_embed(post.record.embed, post.author.did)
+                    
+                    # Return error if no media found
+                    if not media_items:
+                        return {
+                            "error": "No images, videos, or audio found in this post"
+                        }
+                    
                     return {
-                        "author": f"@{view.post.author.handle}",
-                        "content": view.post.record.text,
-                        "timestamp": getattr(view.post.record, 'createdAt', '')
+                        "uri": post.uri,
+                        "author": f"@{post.author.handle}",
+                        "text": post.record.text,
+                        "created_at": getattr(post.record, 'createdAt', ''),
+                        "media": media_items
                     }
-                return None
             
-            # Get current post (the mention request)
-            current_post = extract_post_data(thread.thread)
-            if current_post:
-                mention_request = current_post["content"]
-                mention_author = current_post["author"]
+            # If no parent, return the mention post itself
+            params = models.AppBskyFeedGetPosts.Params(uris=[mention_uri])
+            response = self.client.app.bsky.feed.get_posts(params=params)
             
-            # Find the original post (root)
-            original_post = None
-            all_posts = []
-            
-            # Traverse backwards to find root and collect all posts
-            current = thread.thread
-            while current and hasattr(current, 'parent'):
-                parent_post = extract_post_data(current.parent)
-                if parent_post:
-                    all_posts.insert(0, parent_post)
-                current = current.parent
-            
-            # Original post is the first post in the chain
-            if all_posts:
-                original_post = all_posts[0]
-                target_post = original_post["content"]
-                target_author = original_post["author"]
-            
-            # If no thread found, use direct parent or current post
-            elif hasattr(thread.thread, 'parent'):
-                parent_post = extract_post_data(thread.thread.parent)
-                if parent_post:
-                    original_post = parent_post
-                    target_post = parent_post["content"]
-                    target_author = parent_post["author"]
-            elif current_post:
-                original_post = current_post
-                target_post = current_post["content"]
-                target_author = current_post["author"]
-            
-            if not target_post:
-                return None
-            
-            # Don't fact-check the bot's own posts
-            bot_handle = f"@{self.client.me.handle}" if hasattr(self.client, 'me') else "@haqiqa.bsky.social"
-            if target_author == bot_handle:
-                return None
-            
-            # Get the 2 most recent comments (excluding bot posts and the mention request)
-            recent_comments = []
-            bot_handle_clean = bot_handle.replace("@", "")
-            
-            # Filter out bot posts and get recent non-bot comments
-            non_bot_posts = [p for p in all_posts[1:] if not p["author"].replace("@", "") == bot_handle_clean]
-            
-            # Take the 2 most recent comments (they're in chronological order)
-            if len(non_bot_posts) > 0:
-                recent_comments = non_bot_posts[-2:]  # Last 2 comments
-            
-            # Build simplified conversation summary
-            conversation_parts = []
-            if original_post:
-                conversation_parts.append(f"Original: {original_post['author']}: {original_post['content']}")
-            
-            for comment in recent_comments:
-                conversation_parts.append(f"Recent: {comment['author']}: {comment['content']}")
-            
-            thread_summary = "\n".join(conversation_parts) if conversation_parts else "No conversation context"
-            
-            # Determine request type and instruction
-            request_instruction = (mention_request or "").strip()
-            request_type = "fact_check"
-            if "?" in request_instruction:
-                request_type = "question"
-            
-            # Determine target post type
-            target_post_type = "statement"
-            if "http" in target_post:
-                target_post_type = "article_share"
-            elif target_post.startswith("@"):
-                target_post_type = "reply"
-            
-            return {
-                "request": {
-                    "type": request_type,
-                    "requester": mention_author or "@unknown",
-                    "instruction": request_instruction
-                },
-                "target": {
-                    "author": target_author or "@unknown",
-                    "content": target_post,
-                    "post_type": target_post_type
-                },
-                "context": {
-                    "conversation": [],  # No longer used but kept for compatibility
-                    "thread_summary": thread_summary
-                },
-                # Keep legacy format for backward compatibility
-                "thread_context": thread_summary,
-                "replying_to": {
-                    "text": target_post,
-                    "author": target_author,
-                    "uri": uri
+            if response.posts:
+                post = response.posts[0]
+                
+                # Extract media attachments
+                media_items = []
+                if hasattr(post.record, 'embed') and post.record.embed:
+                    media_items = self._extract_media_from_embed(post.record.embed, post.author.did)
+                
+                # Return error if no media found
+                if not media_items:
+                    return {
+                        "error": "No images, videos, or audio found in this post"
+                    }
+                
+                return {
+                    "uri": mention_uri,
+                    "author": f"@{post.author.handle}",
+                    "text": post.record.text,
+                    "created_at": getattr(post.record, 'createdAt', ''),
+                    "media": media_items
                 }
-            }
+            
+            return None
             
         except Exception as e:
-            logger.debug(f"Thread chain retrieval failed: {e}")
+            logger.debug(f"Parent post retrieval failed: {e}")
             return None
     
     def get_notifications(self, limit: int = 50) -> list:
@@ -230,6 +160,67 @@ class Client:
         except Exception as e:
             logger.debug(f"Notifications retrieval failed: {e}")
             return []
+    
+    def _extract_media_from_embed(self, embed, author_did: str) -> List[Dict[str, Any]]:
+        """Extract media URLs and types from post embed"""
+        media_items = []
+        
+        try:
+            # Handle images (app.bsky.embed.images)
+            if hasattr(embed, 'images') and embed.images:
+                for image in embed.images:
+                    if hasattr(image, 'image') and hasattr(image.image, 'ref'):
+                        # Convert blob ref to URL
+                        blob_url = f"https://bsky.social/xrpc/com.atproto.sync.getBlob?did={author_did}&cid={image.image.ref.link}"
+                        media_items.append({
+                            'type': 'image',
+                            'url': blob_url,
+                            'alt_text': getattr(image, 'alt', ''),
+                            'mime_type': getattr(image.image, 'mime_type', ''),
+                            'size': getattr(image.image, 'size', 0),
+                            'ref': image.image.ref.link
+                        })
+            
+            # Handle videos (app.bsky.embed.video)
+            if hasattr(embed, 'video') and embed.video:
+                video = embed.video
+                # Videos are stored as blobs like images
+                if hasattr(video, 'ref'):
+                    video_url = f"https://bsky.social/xrpc/com.atproto.sync.getBlob?did={author_did}&cid={video.ref.link}"
+                    media_items.append({
+                        'type': 'video',
+                        'url': video_url,
+                        'mime_type': getattr(video, 'mime_type', ''),
+                        'size': getattr(video, 'size', 0),
+                        'ref': video.ref.link
+                    })
+                # Handle playlist format if it exists
+                elif hasattr(video, 'playlist'):
+                    media_items.append({
+                        'type': 'video',
+                        'url': video.playlist,
+                        'thumbnail': getattr(video, 'thumbnail', '')
+                    })
+            
+            # Handle external links that might contain media
+            if hasattr(embed, 'external') and embed.external:
+                external = embed.external
+                if hasattr(external, 'uri'):
+                    # Check if external link is a media URL
+                    url = external.uri
+                    if any(url.lower().endswith(ext) for ext in ['.mp4', '.mov', '.avi', '.mp3', '.wav', '.m4a']):
+                        media_type = 'video' if any(url.lower().endswith(ext) for ext in ['.mp4', '.mov', '.avi']) else 'audio'
+                        media_items.append({
+                            'type': media_type,
+                            'url': url,
+                            'title': getattr(external, 'title', ''),
+                            'description': getattr(external, 'description', '')
+                        })
+                        
+        except Exception as e:
+            logger.debug(f"Media extraction failed: {e}")
+        
+        return media_items
     
     def get_post_replies(self, post_url_or_uri: str, limit: int = 100) -> list:
         """Get replies to a specific post"""
