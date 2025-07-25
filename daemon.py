@@ -2,7 +2,8 @@ import time
 import logging
 import os
 from datetime import datetime
-from bots.transcriptionBot import TranscriptionBot 
+from bots.transcriptionBot import MediaProcessingBot 
+
 
 # Set up logging
 logging.basicConfig(
@@ -11,7 +12,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class Scribe(TranscriptionBot):
+class Scribe(MediaProcessingBot):
     def __init__(self):
         super().__init__()
         self.bot_handle = self.bluesky_username
