@@ -3,6 +3,7 @@ venv
 
 # debugging 
 workspace.ipynb
+daemon_old.py
 
 # cache 
 __pycache__
