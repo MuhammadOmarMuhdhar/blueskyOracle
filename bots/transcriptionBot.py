@@ -3,14 +3,12 @@ import logging
 import os
 import time
 import uuid
-import pandas as pd
 import requests
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 from dotenv import load_dotenv
 from clients.gemini import Client as GeminiClient
 from clients.bluesky import Client as BlueskyClient
-from clients.bigQuery import Client as BigQueryClient
 
 # Load environment variables
 load_dotenv(override=True)
@@ -19,19 +17,19 @@ load_dotenv(override=True)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class bot:
-    """Bluesky fact-checking bot that analyzes posts and returns structured JSON responses"""
+class MediaProcessingBot:
+    """Bluesky media processing bot that summarizes audio/video and describes/reads images from posts"""
     
     def __init__(self, gemini_api_key: str = None, bluesky_username: str = None, bluesky_password: str = None, prompt_file: str = "prompt/prompt.txt"):
-        """Initialize fact checker with API credentials (loads from .env if not provided)"""
+        """Initialize media processing bot with API credentials (loads from .env if not provided)"""
         # Load from environment variables if not provided
         self.gemini_api_key = gemini_api_key or os.getenv('GEMINI_API_KEY')
         self.bluesky_username = bluesky_username or os.getenv('BLUESKY_USERNAME')
         self.bluesky_password = bluesky_password or os.getenv('BLUESKY_PASSWORD')
         self.prompt_file = prompt_file  
         
-        # In-memory mapping of post URIs to fact-check IDs for source retrieval
-        self.post_to_factcheck_map = {}
+        # In-memory mapping of post URIs to transcription IDs for analytics
+        self.post_to_transcription_map = {}
         
         # Validate required credentials
         if not self.gemini_api_key:
@@ -44,138 +42,78 @@ class bot:
         # Initialize clients
         self.gemini_client = GeminiClient(api_key=self.gemini_api_key)
         self.bluesky_client = BlueskyClient(username=self.bluesky_username, password=self.bluesky_password)
-        self.bq_client = self._init_bigquery_client()
     
-    def _init_bigquery_client(self):
-        """Initialize BigQuery client if credentials are available"""
-        try:
-            credentials_json = json.loads(os.getenv('BIGQUERY_CREDENTIALS_JSON'))
-            project_id = os.getenv('BIGQUERY_PROJECT_ID')
-            return BigQueryClient(credentials_json, project_id)
-        except Exception as e:
-            logger.warning(f"BigQuery not available: {e}")
-            return None
-        
-    def fact_check_post(self, post_url: str, max_retries: int = 3) -> Dict[str, Any]:
+    def transcribe_post(self, post_url: str, max_retries: int = 3) -> Dict[str, Any]:
         """
-        Fact-check a Bluesky post with enhanced error-specific retry logic
+        Transcribe media content from a Bluesky post
         """
-        logger.info(f"Starting fact-check (max {max_retries} attempts)")
-        
-        # Error tracking for BigQuery logging
-        error_log = {
-            'post_retrieval_attempts': 0,
-            'response_length_attempts': 0, 
-            'source_validation_attempts': 0,
-            'json_parse_attempts': 0,
-            'network_error_attempts': 0,
-            'final_error_type': None
-        }
-        
-        # Enhanced retry configs for different error types
-        retry_configs = {
-            'post_retrieval': {'max_retries': 5, 'backoff_seconds': [1, 2, 4, 8, 16]},
-            'response_length': {'max_retries': 3, 'backoff_seconds': [2, 2, 2]},
-            'source_validation': {'max_retries': 2, 'backoff_seconds': [3, 5]},
-            'json_parsing': {'max_retries': 2, 'backoff_seconds': [1, 2]},
-            'network_error': {'max_retries': 3, 'backoff_seconds': [5, 10, 15]}
-        }
+        logger.info(f"Starting transcription (max {max_retries} attempts)")
         
         for attempt in range(max_retries):
-            logger.debug(f"Fact-check attempt {attempt + 1}/{max_retries}")
+            logger.debug(f"Transcription attempt {attempt + 1}/{max_retries}")
             
             try:
-                result = self._fact_check_attempt_with_retry(post_url, retry_configs, error_log)
+                result = self._transcription_attempt(post_url)
                 
                 if "error" in result:
-                    error_type = self._classify_error(result['error'])
-                    error_log['final_error_type'] = error_type
-                    
-                    if error_type == 'post_retrieval' and error_log['post_retrieval_attempts'] < retry_configs['post_retrieval']['max_retries']:
-                        error_log['post_retrieval_attempts'] += 1
-                        time.sleep(retry_configs['post_retrieval']['backoff_seconds'][min(error_log['post_retrieval_attempts']-1, 4)])
-                        logger.warning(f"Post retrieval attempt {error_log['post_retrieval_attempts']}: {result['error']}")
-                        continue
-                    elif error_type == 'json_parsing' and error_log['json_parse_attempts'] < retry_configs['json_parsing']['max_retries']:
-                        error_log['json_parse_attempts'] += 1
-                        time.sleep(retry_configs['json_parsing']['backoff_seconds'][min(error_log['json_parse_attempts']-1, 1)])
-                        logger.warning(f"JSON parsing attempt {error_log['json_parse_attempts']}: {result['error']}")
+                    logger.warning(f"Attempt {attempt + 1} failed with error: {result['error']}")
+                    if attempt < max_retries - 1:
+                        time.sleep(2 ** attempt)  # Exponential backoff
                         continue
                     else:
-                        logger.warning(f"Attempt {attempt + 1} failed with error: {result['error']}")
-                        continue
+                        return result  # Return error after final attempt
                 
-                # Check response length with separate retry logic
-                response_text = result.get('response', '')
-                if len(response_text) > 300:
-                    if error_log['response_length_attempts'] < retry_configs['response_length']['max_retries']:
-                        error_log['response_length_attempts'] += 1
-                        error_log['final_error_type'] = 'response_length'
-                        time.sleep(retry_configs['response_length']['backoff_seconds'][min(error_log['response_length_attempts']-1, 2)])
-                        logger.warning(f"Response length attempt {error_log['response_length_attempts']}: {len(response_text)} chars")
-                        continue
+                # Success - return result
+                logger.info(f"Transcription successful on attempt {attempt + 1}")
+                return result
                 
-                # Validate source URLs with separate retry logic
-                sources = result.get('sources', [])
-                invalid_urls = self._validate_source_urls(sources)
-                
-                total_sources = len(sources)
-                invalid_count = len(invalid_urls)
-                valid_count = total_sources - invalid_count
-                success_rate = (valid_count / total_sources * 100) if total_sources > 0 else 0
-                
-                # Accept if no sources (general statements) or ≥50% sources work
-                if total_sources == 0 or success_rate >= 50:
-                    logger.info(f"Fact-check successful ({len(response_text)} chars, {valid_count}/{total_sources} sources valid)")
-                    # Add error metadata to status if there were retries
-                    if any(error_log[k] > 0 for k in error_log if k != 'final_error_type'):
-                        result['status_with_errors'] = {
-                            'original_status': result.get('status'),
-                            'error_metadata': error_log
-                        }
-                    return result
-                
-                # Source validation retry logic
-                if error_log['source_validation_attempts'] < retry_configs['source_validation']['max_retries']:
-                    error_log['source_validation_attempts'] += 1
-                    error_log['final_error_type'] = 'source_validation'
-                    time.sleep(retry_configs['source_validation']['backoff_seconds'][min(error_log['source_validation_attempts']-1, 1)])
-                    logger.warning(f"Source validation attempt {error_log['source_validation_attempts']}: {success_rate:.1f}% valid")
-                    continue
-                
-                # If this is the last attempt, accept anyway to avoid inconclusive results
-                if attempt == max_retries - 1:
-                    logger.warning(f"Final attempt - accepting despite issues")
-                    result['status_with_errors'] = {
-                        'original_status': result.get('status'),
-                        'error_metadata': error_log
-                    }
-                    return result
-                    
             except Exception as e:
-                error_type = self._classify_error(str(e))
-                error_log['final_error_type'] = error_type
-                
-                if error_type == 'network_error' and error_log['network_error_attempts'] < retry_configs['network_error']['max_retries']:
-                    error_log['network_error_attempts'] += 1
-                    backoff_time = retry_configs['network_error']['backoff_seconds'][min(error_log['network_error_attempts']-1, 2)]
-                    time.sleep(backoff_time)
-                    logger.error(f"Network error attempt {error_log['network_error_attempts']}: {e}")
+                logger.error(f"Transcription attempt {attempt + 1} failed: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
                     continue
-                
-                logger.error(f"Attempt {attempt + 1} failed with exception: {e}")
-                if attempt == max_retries - 1:
-                    break
-                time.sleep(2)
+                else:
+                    return {"error": f"Transcription failed after {max_retries} attempts: {str(e)}"}
+    
+    def _transcription_attempt(self, post_url: str) -> Dict[str, Any]:
+        """
+        Single transcription attempt
+        """
+        start_time = time.time()
         
-        # All attempts failed - return inconclusive response with error metadata
-        logger.error("All fact-check attempts failed")
-        inconclusive = self._create_inconclusive_response()
-        inconclusive['status_with_errors'] = {
-            'original_status': inconclusive.get('status'),
-            'error_metadata': error_log
-        }
-        return inconclusive
+        # Get parent post with media
+        post_data = self.bluesky_client.get_parent_post_with_media(post_url)
+        if not post_data:
+            return {"error": "Could not retrieve post data"}
+        
+        # Check for error (no media found)
+        if "error" in post_data:
+            return post_data  # Return the error directly
+        
+        # Check if media is present
+        media_items = post_data.get("media", [])
+        if not media_items:
+            return {"error": "No media found in post"}
+        
+        # Load prompt template from file
+        with open(self.prompt_file, 'r') as f:
+            prompt_template = f.read()
+        
+        # Process first media item (for now)
+        media_item = media_items[0]
+        media_url = media_item["url"]
+        
+        # Call Gemini media processing with structured output
+        gemini_response = self.gemini_client.process_media(media_url, prompt_template)
+        
+        # Parse JSON response
+        try:
+            result = json.loads(gemini_response)
+            logger.info(f"Transcription completed in {time.time() - start_time:.2f}s")
+            return result
+            
+        except json.JSONDecodeError as e:
+            return {"error": f"Failed to parse JSON response: {str(e)}"}
     
     def _fact_check_attempt_with_retry(self, post_url: str, retry_configs: dict, error_log: dict) -> Dict[str, Any]:
         """
@@ -718,36 +656,48 @@ class bot:
         
         return response
     
-    def post_fact_check_reply(self, original_post_url: str) -> bool:
+    def format_transcription_reply(self, transcription_result: Dict[str, Any]) -> str:
         """
-        Complete workflow: fact-check a post and reply with results
+        Format the JSON transcription result into a readable Bluesky reply
         
         Args:
-            original_post_url: URL of the post to fact-check
+            transcription_result: The parsed JSON result from transcription
+            
+        Returns:
+            Formatted string for Bluesky reply
+        """
+        if "error" in transcription_result:
+            return f"{transcription_result['error']}"
+            
+        # Use the response from the structured JSON output
+        response = transcription_result.get("response", "Unable to process media content")
+        
+        # Clean up any unwanted characters but keep the response natural
+        response = response.strip()
+        
+        return response
+    
+    def post_transcription_reply(self, original_post_url: str) -> bool:
+        """
+        Complete workflow: transcribe media from a post and reply with results
+        
+        Args:
+            original_post_url: URL of the post to transcribe
             
         Returns:
             True if successful, False otherwise
         """
-        # Perform fact-check
-        result = self.fact_check_post(original_post_url)
+        # Perform transcription
+        result = self.transcribe_post(original_post_url)
         
         # Format reply
-        reply_text = self.format_bluesky_reply(result)
+        reply_text = self.format_transcription_reply(result)
         
         # Post reply
         reply_result = self.bluesky_client.post_reply(original_post_url, reply_text)
         
-        if reply_result and reply_result != True:  # Got a URI back
-            # Store mapping for source retrieval
-            fact_check_id = result.get('fact_check_id')
-            if fact_check_id:
-                self.post_to_factcheck_map[reply_result] = fact_check_id
-                logger.debug(f"Stored source mapping: {fact_check_id}")
-            
-            logger.info(f"Posted fact-check reply")
-            return True
-        elif reply_result == True:  # Old-style boolean return
-            logger.info(f"Posted fact-check reply") 
+        if reply_result:
+            logger.info(f"Posted transcription reply")
             return True
         else:
             logger.error(f"Failed to post reply")
@@ -909,3 +859,44 @@ class bot:
             return result
         
         return None
+    
+    def _reduce_response_length(self, original_response: str) -> str:
+        """
+        Use length reduction prompt to compress a response while preserving all key information
+        """
+        logger.debug(f"Attempting to reduce response length from {len(original_response)} chars")
+        
+        # Load length reduction prompt template
+        length_reduction_prompt_file = "prompt/length_reduction.txt"
+        try:
+            with open(length_reduction_prompt_file, 'r') as f:
+                prompt_template = f.read()
+        except FileNotFoundError:
+            logger.error(f"Length reduction prompt file not found: {length_reduction_prompt_file}")
+            # Fallback to simple truncation
+            return original_response[:285] + "..." if len(original_response) > 285 else original_response
+        
+        # Format prompt with original response
+        prompt = prompt_template.format(original_response=original_response)
+        
+        # Query Gemini for length reduction
+        try:
+            reduced_response = self.gemini_client.generate(prompt)
+            
+            # Clean up the response (remove any extra whitespace/formatting)
+            reduced_response = reduced_response.strip()
+            
+            logger.debug(f"Response reduced to {len(reduced_response)} chars")
+            
+            # Verify it's actually shorter and within limit
+            if len(reduced_response) <= 285 and len(reduced_response) < len(original_response):
+                return reduced_response
+            else:
+                logger.warning(f"Length reduction failed: {len(reduced_response)} chars (target: 285)")
+                # Fallback to truncation
+                return original_response[:285] + "..." if len(original_response) > 285 else original_response
+                
+        except Exception as e:
+            logger.error(f"Error during length reduction: {e}")
+            # Fallback to simple truncation
+            return original_response[:285] + "..." if len(original_response) > 285 else original_response
