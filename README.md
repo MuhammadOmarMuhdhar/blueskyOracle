@@ -1,4 +1,4 @@
-# [@bskyscribe.bsky.social‬](https://bsky.app/profile/bskyscribe.bsky.social)
+# [@bskyscribe.bsky.social](https://bsky.app/profile/bskyscribe.bsky.social)
 
 A media processing bot for Bluesky that describes images and summarizes audio/video content from posts.
 
@@ -16,12 +16,21 @@ A media processing bot for Bluesky that describes images and summarizes audio/vi
 - **Images**: Describes visual content or extracts text (OCR)
 - **Videos**: Summarizes spoken content and key points  
 - **Audio**: Summarizes conversations and main topics
-  
 
+### Language Support
+
+Supports 10 languages - just mention the bot with your preferred language:
+- `@bskyscribe.bsky.social` (English, default)
+- `@bskyscribe.bsky.social spanish` or `es`
+- `@bskyscribe.bsky.social french` or `fr` 
+- `@bskyscribe.bsky.social 中文` or `zh`
+- `@bskyscribe.bsky.social 日本語` or `ja`
+- Plus German, Portuguese, Italian, Korean, Arabic
 
 ### Technical Features
 - **Multi-Format Support**: Handles images, videos, and audio files 
 - **Smart Processing**: Auto-detects media type and applies appropriate processing
+- **Multi-Language Support**: Responds in user's preferred language (10 languages supported)
 - **Memory Efficient**: Uses in-memory processing (BytesIO) for cloud deployment compatibility
 
 ### Deployment 
@@ -88,6 +97,7 @@ pip install -r requirements.txt
 
 ## Usage
 
+
 ### Basic Example
 
 ```python
@@ -96,16 +106,20 @@ from bots.transcriptionBot import MediaProcessingBot
 # Initialize the media processing bot (reads from .env automatically)
 bot = MediaProcessingBot()
 
-# Process media from a specific post
+# Process media from a specific post (English)
 post_url = "https://bsky.app/profile/user/post/123"
 result = bot.transcribe_post(post_url)
+
+# Process with specific language
+result = bot.transcribe_post(post_url, language="Spanish")
 
 # Get formatted response for Bluesky
 reply_text = bot.format_transcription_reply(result)
 print(reply_text)
 
-# Or do the complete workflow (process + reply)
-success = bot.post_transcription_reply(post_url)
+# Or do the complete workflow (process + reply with language detection)
+mention_text = "@bskyscribe.bsky.social español"
+success = bot.post_transcription_reply(post_url, mention_text)
 ```
 
 ### Live Monitoring

@@ -43,17 +43,48 @@ class MediaProcessingBot:
         self.gemini_client = GeminiClient(api_key=self.gemini_api_key)
         self.bluesky_client = BlueskyClient(username=self.bluesky_username, password=self.bluesky_password)
     
-    def transcribe_post(self, post_url: str, max_retries: int = 3) -> Dict[str, Any]:
+    def extract_language_from_mention(self, mention_text: str) -> str:
+        """Extract requested language from mention text, default to English"""
+        if not mention_text:
+            return "English"
+        
+        # Language mappings
+        language_map = {
+            # Full names
+            'spanish': 'Spanish', 'español': 'Spanish',
+            'french': 'French', 'français': 'French', 
+            'german': 'German', 'deutsch': 'German',
+            'chinese': 'Chinese', '中文': 'Chinese',
+            'japanese': 'Japanese', '日本語': 'Japanese',
+            'portuguese': 'Portuguese', 'português': 'Portuguese',
+            'italian': 'Italian', 'italiano': 'Italian',
+            'korean': 'Korean', '한국어': 'Korean',
+            'arabic': 'Arabic', 'العربية': 'Arabic',
+            
+            # ISO codes
+            'es': 'Spanish', 'fr': 'French', 'de': 'German',
+            'zh': 'Chinese', 'ja': 'Japanese', 'pt': 'Portuguese', 
+            'it': 'Italian', 'ko': 'Korean', 'ar': 'Arabic'
+        }
+        
+        text_lower = mention_text.lower()
+        for key, language in language_map.items():
+            if key in text_lower:
+                return language
+        
+        return "English"  # Default
+    
+    def transcribe_post(self, post_url: str, language: str = "English", max_retries: int = 3) -> Dict[str, Any]:
         """
         Transcribe media content from a Bluesky post
         """
-        logger.info(f"Starting transcription (max {max_retries} attempts)")
+        logger.info(f"Starting transcription in {language} (max {max_retries} attempts)")
         
         for attempt in range(max_retries):
             logger.debug(f"Transcription attempt {attempt + 1}/{max_retries}")
             
             try:
-                result = self._transcription_attempt(post_url)
+                result = self._transcription_attempt(post_url, language)
                 
                 if "error" in result:
                     logger.warning(f"Attempt {attempt + 1} failed with error: {result['error']}")
@@ -75,7 +106,7 @@ class MediaProcessingBot:
                 else:
                     return {"error": f"Transcription failed after {max_retries} attempts: {str(e)}"}
     
-    def _transcription_attempt(self, post_url: str) -> Dict[str, Any]:
+    def _transcription_attempt(self, post_url: str, language: str = "English") -> Dict[str, Any]:
         """
         Single transcription attempt
         """
@@ -99,12 +130,15 @@ class MediaProcessingBot:
         with open(self.prompt_file, 'r') as f:
             prompt_template = f.read()
         
+        # Format prompt with language
+        formatted_prompt = prompt_template.format(language=language)
+        
         # Process first media item (for now)
         media_item = media_items[0]
         media_url = media_item["url"]
         
         # Call Gemini media processing with structured output
-        gemini_response = self.gemini_client.process_media(media_url, prompt_template)
+        gemini_response = self.gemini_client.process_media(media_url, formatted_prompt)
         
         # Parse JSON response
         try:
@@ -677,18 +711,23 @@ class MediaProcessingBot:
         
         return response
     
-    def post_transcription_reply(self, original_post_url: str) -> bool:
+    def post_transcription_reply(self, original_post_url: str, mention_text: str = "") -> bool:
         """
         Complete workflow: transcribe media from a post and reply with results
         
         Args:
             original_post_url: URL of the post to transcribe
+            mention_text: Text of the mention (for language detection)
             
         Returns:
             True if successful, False otherwise
         """
-        # Perform transcription
-        result = self.transcribe_post(original_post_url)
+        # Extract language from mention
+        language = self.extract_language_from_mention(mention_text)
+        logger.info(f"Processing transcription request in {language}")
+        
+        # Perform transcription with language
+        result = self.transcribe_post(original_post_url, language)
         
         # Format reply
         reply_text = self.format_transcription_reply(result)
@@ -697,7 +736,7 @@ class MediaProcessingBot:
         reply_result = self.bluesky_client.post_reply(original_post_url, reply_text)
         
         if reply_result:
-            logger.info(f"Posted transcription reply")
+            logger.info(f"Posted transcription reply in {language}")
             return True
         else:
             logger.error(f"Failed to post reply")

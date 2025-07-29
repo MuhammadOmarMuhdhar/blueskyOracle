@@ -73,8 +73,11 @@ class Scribe(MediaProcessingBot):
                 logger.debug(f"Already replied to this mention, skipping")
                 return
             
+            # Get mention text for language detection
+            mention_text = self.get_mention_text(mention_uri)
+            
             # Proceed with transcription
-            result = self.post_transcription_reply(mention_uri)
+            result = self.post_transcription_reply(mention_uri, mention_text)
             
             if result:
                 logger.info(f"Successfully processed mention")
