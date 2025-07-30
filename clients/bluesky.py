@@ -166,6 +166,11 @@ class Client:
         media_items = []
         
         try:
+            # Handle record with media (app.bsky.embed.recordWithMedia)
+            if hasattr(embed, 'media') and embed.media:
+                # Recursively extract media from the media part
+                media_items.extend(self._extract_media_from_embed(embed.media, author_did))
+            
             # Handle images (app.bsky.embed.images)
             if hasattr(embed, 'images') and embed.images:
                 for image in embed.images:
