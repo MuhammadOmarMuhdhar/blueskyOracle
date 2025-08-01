@@ -44,9 +44,11 @@ class MediaProcessingBot:
         self.bluesky_client = BlueskyClient(username=self.bluesky_username, password=self.bluesky_password)
     
     def extract_language_from_mention(self, mention_text: str) -> str:
-        """Extract requested language from mention text, default to English"""
+        """Extract requested language from mention text - PROXIMITY-BASED detection only"""
         if not mention_text:
             return "English"
+        
+        import re
         
         # Language mappings
         language_map = {
@@ -67,12 +69,98 @@ class MediaProcessingBot:
             'it': 'Italian', 'ko': 'Korean', 'ar': 'Arabic'
         }
         
-        text_lower = mention_text.lower()
-        for key, language in language_map.items():
-            if key in text_lower:
-                return language
+        text_lower = mention_text.lower().strip()
         
-        return "English"  # Default
+        # 1. HIGHEST PRIORITY: Explicit structured syntax (anywhere in text)
+        explicit_patterns = [
+            r'lang(?:uage)?[:\s]+([a-z]{2,})',  # lang:es, language: spanish
+            r'\[([a-z]{2,})\]',                 # [spanish]
+            r'\{([a-z]{2,})\}',                 # {es}
+        ]
+        
+        for pattern in explicit_patterns:
+            match = re.search(pattern, text_lower)
+            if match:
+                lang_key = match.group(1).lower()
+                if lang_key in language_map:
+                    return language_map[lang_key]
+        
+        # 2. PROXIMITY-BASED DETECTION: Language must be within 1-2 words of @mention
+        # Find bot mention position
+        bot_mention_patterns = [
+            r'@bskyscribe\.bsky\.social',
+            r'@bskyscribe',
+            r'@bot'
+        ]
+        
+        mention_positions = []
+        for pattern in bot_mention_patterns:
+            for match in re.finditer(pattern, text_lower):
+                mention_positions.append(match.start())
+        
+        if not mention_positions:
+            # No bot mention found, default to English
+            return "English"
+        
+        # Extract words and their positions
+        words_with_positions = []
+        for match in re.finditer(r'\b\w+\b', text_lower):
+            words_with_positions.append((match.group(), match.start(), match.end()))
+        
+        # For each mention, check words within strict proximity window
+        for mention_pos in mention_positions:
+            # Find the word index closest to the mention
+            mention_word_index = None
+            min_distance = float('inf')
+            
+            for i, (word, start_pos, end_pos) in enumerate(words_with_positions):
+                # Calculate distance from mention to word
+                word_center = (start_pos + end_pos) / 2
+                distance = abs(word_center - mention_pos)
+                if distance < min_distance:
+                    min_distance = distance
+                    mention_word_index = i
+            
+            if mention_word_index is None:
+                continue
+            
+            # Check ONLY 1-2 words AFTER the mention (safer, more natural)
+            proximity_range = 2
+            start_idx = mention_word_index + 1  # Start after mention
+            end_idx = min(len(words_with_positions), mention_word_index + proximity_range + 1)
+            
+            nearby_words = []
+            for i in range(start_idx, end_idx):
+                nearby_words.append(words_with_positions[i][0])
+            
+            # Check if any nearby words are language keywords
+            for word in nearby_words:
+                if word in language_map:
+                    # Additional validation for short ISO codes
+                    if len(word) <= 3:
+                        # For ISO codes, ensure it's not part of common English words
+                        if word in ['it', 'is', 'in', 'to', 'be', 'we', 'he', 'me', 'no', 'so', 'go', 'do']:
+                            continue
+                    return language_map[word]
+        
+        # 3. NATURAL LANGUAGE PATTERNS (with proximity)
+        natural_patterns = [
+            r'in\s+([a-z]{2,})(?:\s|$|[.,!?])',    # "in spanish"
+            r'to\s+([a-z]{2,})(?:\s|$|[.,!?])',    # "to french"
+            r'as\s+([a-z]{2,})(?:\s|$|[.,!?])',    # "as german"
+        ]
+        
+        for mention_pos in mention_positions:
+            # Check natural patterns within proximity of mentions
+            for pattern in natural_patterns:
+                for match in re.finditer(pattern, text_lower):
+                    if abs(match.start() - mention_pos) <= 20:  # Strict proximity
+                        lang_key = match.group(1).lower()
+                        if lang_key in language_map:
+                            return language_map[lang_key]
+        
+        # Default: No language detected near bot mentions
+        return "English"
     
     def transcribe_post(self, post_url: str, language: str = "English", max_retries: int = 3) -> Dict[str, Any]:
         """
