@@ -109,16 +109,13 @@ class MediaProcessingBot:
         
         # For each mention, check words within strict proximity window
         for mention_pos in mention_positions:
-            # Find the word index closest to the mention
+            # Find the word index that represents the end of the mention
+            mention_end = mention_pos + len("@bskyscribe.bsky.social")  # Calculate mention end position
             mention_word_index = None
-            min_distance = float('inf')
             
             for i, (word, start_pos, end_pos) in enumerate(words_with_positions):
-                # Calculate distance from mention to word
-                word_center = (start_pos + end_pos) / 2
-                distance = abs(word_center - mention_pos)
-                if distance < min_distance:
-                    min_distance = distance
+                # Find the last word that overlaps with or is part of the mention
+                if start_pos <= mention_end and end_pos >= mention_pos:
                     mention_word_index = i
             
             if mention_word_index is None:
